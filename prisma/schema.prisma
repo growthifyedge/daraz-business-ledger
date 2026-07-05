@@ -1,0 +1,352 @@
+// Daraz Business Ledger & Inventory System — database schema
+// PostgreSQL + Prisma. Works with Supabase, Neon, Railway, or any Postgres host.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+}
+
+enum StockMovementType {
+  ADD // stock received / added
+  REDUCE // manual reduction
+  ADJUST // manual correction
+  TRANSFER // moved between stores
+  DAMAGED
+  LOST
+  RETURNED
+  SALE // auto from a sale entry
+  PURCHASE // auto from a purchase entry
+}
+
+enum ExpenseCategory {
+  PRODUCT_COST
+  VAT
+  DARAZ_COMMISSION
+  OTHER_DARAZ_CHARGES
+  PACKAGING
+  FLYERS
+  TAPE
+  STICKERS
+  SCISSORS
+  STATIONERY
+  BANK_CHARGES
+  DELIVERY_TRANSPORT
+  MISCELLANEOUS
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  RESTORE
+}
+
+enum CashParty {
+  YAHYA
+  OWNER
+}
+
+// ---------------------------------------------------------------------------
+// Auth / Users
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(ADMIN)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs AuditLog[]
+}
+
+// ---------------------------------------------------------------------------
+// Stores
+// ---------------------------------------------------------------------------
+
+model Store {
+  id        String    @id @default(cuid())
+  name      String
+  notes     String?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft delete
+
+  products    ProductStore[]
+  purchases   Purchase[]
+  sales       Sale[]
+  expenses    Expense[]
+  settlements Settlement[]
+  movements   StockMovement[]
+}
+
+// ---------------------------------------------------------------------------
+// Products & Inventory
+// ---------------------------------------------------------------------------
+
+model Product {
+  id            String    @id @default(cuid())
+  name          String
+  sku           String    @unique
+  category      String    @default("Lifestyle Gadgets")
+  purchaseCost  Float     @default(0) // cost per unit
+  sellingPrice  Float     @default(0)
+  currentStock  Int       @default(0)
+  minStockLevel Int       @default(0)
+  damagedStock  Int       @default(0)
+  lostStock     Int       @default(0)
+  returnedStock Int       @default(0)
+  active        Boolean   @default(true)
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  stores    ProductStore[]
+  purchases Purchase[]
+  sales     Sale[]
+  movements StockMovement[]
+}
+
+// Join table: a product can be available in one or many stores.
+model ProductStore {
+  productId String
+  storeId   String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  store     Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@id([productId, storeId])
+}
+
+model StockMovement {
+  id          String            @id @default(cuid())
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id])
+  storeId     String?
+  store       Store?            @relation(fields: [storeId], references: [id])
+  type        StockMovementType
+  quantity    Int // signed effect on currentStock (+ received, - reduced)
+  toStoreId   String? // for transfers
+  reference   String? // e.g. related purchase/sale id
+  note        String?
+  createdById String?
+  createdBy   String? // display name snapshot
+  createdAt   DateTime          @default(now())
+
+  @@index([productId])
+  @@index([storeId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Purchases (Yahya buys, owner reimburses)
+// ---------------------------------------------------------------------------
+
+model Purchase {
+  id                String        @id @default(cuid())
+  date              DateTime
+  purchasedBy       String        @default("Yahya")
+  storeId           String?
+  store             Store?        @relation(fields: [storeId], references: [id])
+  productId         String
+  product           Product       @relation(fields: [productId], references: [id])
+  quantity          Int
+  unitCost          Float
+  totalCost         Float
+  invoiceUrl        String?
+  paymentStatus     PaymentStatus @default(UNPAID)
+  reimbursementDate DateTime?
+  bankReference     String?
+  notes             String?
+  createdById       String?
+  createdBy         String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
+
+  @@index([date])
+  @@index([productId])
+  @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Sales income (manually entered from Daraz Seller App)
+// ---------------------------------------------------------------------------
+
+model Sale {
+  id             String    @id @default(cuid())
+  date           DateTime
+  storeId        String?
+  store          Store?    @relation(fields: [storeId], references: [id])
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id])
+  quantitySold   Int
+  grossAmount    Float // gross sale amount
+  commission     Float     @default(0) // Daraz commission
+  vat            Float     @default(0)
+  otherCharges   Float     @default(0) // other Daraz charges
+  returnsRefunds Float     @default(0)
+  netAmount      Float // net received / settlement amount
+  notes          String?
+  createdById    String?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  @@index([date])
+  @@index([productId])
+  @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Expenses
+// ---------------------------------------------------------------------------
+
+model Expense {
+  id            String          @id @default(cuid())
+  date          DateTime
+  category      ExpenseCategory
+  storeId       String?
+  store         Store?          @relation(fields: [storeId], references: [id])
+  amount        Float
+  paidBy        String?
+  paymentMethod String?
+  receiptUrl    String?
+  notes         String?
+  createdById   String?
+  createdBy     String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  deletedAt     DateTime?
+
+  @@index([date])
+  @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Accessories & Stationery (packing material)
+// ---------------------------------------------------------------------------
+
+model Accessory {
+  id                String    @id @default(cuid())
+  name              String
+  quantityPurchased Int       @default(0)
+  quantityUsed      Int       @default(0)
+  unitCost          Float     @default(0)
+  totalCost         Float     @default(0)
+  purchaseDate      DateTime?
+  receiptUrl        String?
+  notes             String?
+  createdById       String?
+  createdBy         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Weekly Daraz settlements
+// ---------------------------------------------------------------------------
+
+model Settlement {
+  id            String    @id @default(cuid())
+  date          DateTime
+  storeId       String?
+  store         Store?    @relation(fields: [storeId], references: [id])
+  grossAmount   Float
+  vat           Float     @default(0)
+  commission    Float     @default(0)
+  otherCharges  Float     @default(0)
+  deductions    Float     @default(0) // any other lumped deductions
+  netAmount     Float
+  bankReference String?
+  notes         String?
+  createdById   String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  @@index([date])
+  @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Cash flow — owner investment and profit-share payouts
+// ---------------------------------------------------------------------------
+
+model Investment {
+  id          String    @id @default(cuid())
+  date        DateTime
+  amount      Float
+  note        String?
+  createdById String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([date])
+}
+
+// Profit-share payouts actually paid out to Yahya or the Owner.
+model Payout {
+  id          String    @id @default(cuid())
+  date        DateTime
+  party       CashParty
+  amount      Float
+  note        String?
+  createdById String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — owner-only. Never deletable from the UI.
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id])
+  userEmail String
+  userName  String
+  action    AuditAction
+  module    String
+  recordId  String?
+  oldValue  Json?
+  newValue  Json?
+  createdAt DateTime    @default(now())
+
+  @@index([createdAt])
+  @@index([module])
+}

@@ -1,0 +1,59 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+/build
+next-env.d.ts
+
+# production / caches
+/coverage
+
+# debug & logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# local env files (keep .env.example tracked)
+.env
+.env.local
+.env*.local
+.env.development
+.env.production
+
+# vercel
+.vercel
+
+# typescript build info
+*.tsbuildinfo
+
+# prisma / local database files
+/prisma/*.db
+/prisma/*.db-journal
+*.sqlite
+*.sqlite3
+
+# editors / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# certs
+*.pem
