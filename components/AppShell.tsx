@@ -18,7 +18,6 @@ import {
   ShieldCheck,
   DatabaseBackup,
   Menu,
-  X,
   LogOut,
   ChevronDown,
 } from 'lucide-react';
