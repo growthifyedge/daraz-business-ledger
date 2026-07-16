@@ -70,7 +70,9 @@ export async function saveProduct(
             purchaseCost,
             sellingPrice,
             minStockLevel,
-            currentStock: openingStock,
+            // Starts at zero: the ADD movement below is the only thing that
+            // raises stock, so setting openingStock here would count it twice.
+            currentStock: 0,
             active,
             notes,
             category: PRODUCT_CATEGORY,
@@ -90,7 +92,9 @@ export async function saveProduct(
             user,
           });
         }
-        return p;
+        // Re-read after the movement so the audit log gets the final stock,
+        // not the zero the row was created with.
+        return tx.product.findUniqueOrThrow({ where: { id: p.id } });
       });
       await logAudit({
         user,
