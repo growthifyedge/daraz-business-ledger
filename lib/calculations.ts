@@ -1,5 +1,6 @@
 import { prisma } from './prisma';
 import { PROFIT_SPLIT } from './config';
+import { saleCogs, returnRecoveredCogs } from './returns';
 import type { Prisma, ExpenseCategory } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -43,17 +44,75 @@ const DARAZ_DUP_CATEGORIES: ExpenseCategory[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Returns → P&L eligibility
+// ---------------------------------------------------------------------------
+
+/**
+ * The single definition of a return refund that costs the seller money.
+ * A refund reduces profit only when it is settled (COMPLETED), borne by us
+ * (SELLER) and the record is live. Platform-covered refunds are Daraz's loss,
+ * and PENDING/CANCELLED refunds have not cost anything (yet or ever).
+ *
+ * `returnDate` is the reporting date, so a refund lands in the period the
+ * return was raised.
+ *
+ * WHY SUMMING THIS WITH THE LEGACY `Sale.returnsRefunds` IS SAFE
+ * -------------------------------------------------------------
+ * Not because overlap is inherently impossible — it is not. An *unlinked*
+ * return can perfectly well describe a refund that some sale already recorded
+ * in its legacy field, and nothing in the data would reveal the connection.
+ *
+ * It is safe because the legacy field is now a closed, historical set:
+ *   - the Sales form no longer offers `returnsRefunds` as an input;
+ *   - `saveSale` writes 0 on create and preserves the stored value on edit;
+ *   - so no NEW refund can ever enter through the legacy path.
+ * Every new refund is therefore recorded exactly once, in Returns.
+ *
+ * `legacyRefundConflict()` remains as defence-in-depth for the finite set of
+ * historical sales that already carry a legacy refund and get linked to a
+ * return. (At the time of writing that set is empty: 0 sales have
+ * returnsRefunds != 0.)
+ */
+export function eligibleReturnWhere(f: Filter = {}): Prisma.ReturnWhereInput {
+  const where: Prisma.ReturnWhereInput = {
+    deletedAt: null,
+    refundStatus: 'COMPLETED',
+    chargedTo: 'SELLER',
+  };
+  const range = dateRange(f.from, f.to);
+  if (range) where.returnDate = range;
+  if (f.storeId) where.storeId = f.storeId;
+  return where;
+}
+
+// ---------------------------------------------------------------------------
 // Profit & Loss
 // ---------------------------------------------------------------------------
 
 export interface Financials {
   grossSales: number;
   unitsSold: number;
-  productCost: number; // COGS of items sold
+  /** Net product cost = salesCOGS − recoveredCOGS. Used as the COGS deduction. */
+  productCost: number;
+  /** Σ quantitySold × snapshotted unit cost. */
+  salesCOGS: number;
+  /** Σ restocked-return quantity × snapshotted unit cost (cost put back on shelf). */
+  recoveredCOGS: number;
+  /** salesCOGS − recoveredCOGS (same as productCost; named for reporting clarity). */
+  netProductCost: number;
   commission: number;
   vat: number;
   otherDarazCharges: number;
+  /** Total refunds that reduce profit = legacy Sale field + eligible Returns. */
   returnsRefunds: number;
+  /** Breakdown: refunds recorded inline on Sale (legacy path). */
+  legacySaleRefunds: number;
+  /** Breakdown: COMPLETED + SELLER refunds from the Returns module. */
+  returnModuleRefunds: number;
+  /** Informational — Daraz absorbed these, so they never reduce seller profit. */
+  platformCoveredRefunds: number;
+  /** Informational — not settled yet, so not a loss. */
+  pendingReturnRefunds: number;
   operatingExpenses: number; // packaging, flyers, transport, bank charges, misc...
   accessoriesConsumed: number; // cost of packing material used
   grossProfit: number; // grossSales - productCost
@@ -77,29 +136,106 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
       otherCharges: true,
       returnsRefunds: true,
       netAmount: true,
+      unitCost: true,
       product: { select: { purchaseCost: true } },
     },
   });
 
   let grossSales = 0,
     unitsSold = 0,
-    productCost = 0,
+    salesCOGS = 0,
     commission = 0,
     vat = 0,
     otherDarazCharges = 0,
-    returnsRefunds = 0,
+    legacySaleRefunds = 0,
     netReceived = 0;
 
   for (const s of sales) {
     grossSales += s.grossAmount;
     unitsSold += s.quantitySold;
-    productCost += s.quantitySold * (s.product?.purchaseCost ?? 0);
+    // Snapshotted cost — stable against later purchaseCost changes.
+    salesCOGS += saleCogs({
+      quantitySold: s.quantitySold,
+      unitCost: s.unitCost,
+      productPurchaseCost: s.product?.purchaseCost,
+    });
     commission += s.commission;
     vat += s.vat;
     otherDarazCharges += s.otherCharges;
-    returnsRefunds += s.returnsRefunds;
+    legacySaleRefunds += s.returnsRefunds;
     netReceived += s.netAmount;
   }
+
+  // Returns module — dated by returnDate, filtered by store, same Filter shape.
+  const returnRange = dateRange(f.from, f.to);
+  const returnScope: Prisma.ReturnWhereInput = { deletedAt: null };
+  if (returnRange) returnScope.returnDate = returnRange;
+  if (f.storeId) returnScope.storeId = f.storeId;
+
+  const [eligibleAgg, platformAgg, pendingAgg] = await Promise.all([
+    // Only these cost the seller money.
+    prisma.return.aggregate({
+      where: eligibleReturnWhere(f),
+      _sum: { refundAmount: true },
+    }),
+    // Daraz absorbed these — informational only.
+    prisma.return.aggregate({
+      where: { ...returnScope, refundStatus: 'COMPLETED', chargedTo: 'PLATFORM' },
+      _sum: { refundAmount: true },
+    }),
+    // Not settled — never counted as a loss.
+    prisma.return.aggregate({
+      where: { ...returnScope, refundStatus: 'PENDING' },
+      _sum: { refundAmount: true },
+    }),
+  ]);
+
+  const returnModuleRefunds = eligibleAgg._sum.refundAmount ?? 0;
+  const platformCoveredRefunds = platformAgg._sum.refundAmount ?? 0;
+  const pendingReturnRefunds = pendingAgg._sum.refundAmount ?? 0;
+
+  // Safe to add: the legacy field is a closed historical set (no longer
+  // writable from the Sales form), so a new refund can only be counted once —
+  // in Returns. See eligibleReturnWhere() for the full reasoning.
+  const returnsRefunds = legacySaleRefunds + returnModuleRefunds;
+
+  // COGS recovery — a restocked unit puts its cost back on the shelf. Dated by
+  // receivedAt (when it physically returned), NOT returnDate. Independent of the
+  // refund's financial state — see recoversCogs() in lib/returns.ts. Per-row
+  // because a null unitCost snapshot falls back to the product's purchaseCost.
+  const recoveryWhere: Prisma.ReturnWhereInput = {
+    deletedAt: null,
+    inventoryStatus: 'RESTOCKED',
+  };
+  if (returnRange) recoveryWhere.receivedAt = returnRange;
+  if (f.storeId) recoveryWhere.storeId = f.storeId;
+  const restockedReturns = await prisma.return.findMany({
+    where: recoveryWhere,
+    select: {
+      quantity: true,
+      unitCost: true,
+      inventoryStatus: true,
+      deletedAt: true,
+      product: { select: { purchaseCost: true } },
+    },
+  });
+  const recoveredCOGS = restockedReturns.reduce(
+    (sum, r) =>
+      sum +
+      returnRecoveredCogs({
+        inventoryStatus: r.inventoryStatus,
+        deletedAt: r.deletedAt,
+        quantity: r.quantity,
+        unitCost: r.unitCost,
+        productPurchaseCost: r.product?.purchaseCost,
+      }),
+    0
+  );
+
+  // Net product cost is COGS of goods sold minus the cost of goods returned to
+  // sellable stock.
+  const netProductCost = salesCOGS - recoveredCOGS;
+  const productCost = netProductCost;
 
   // Operating expenses (exclude Daraz-side categories already in sales).
   const expenseWhere: Prisma.ExpenseWhereInput = {
@@ -147,10 +283,17 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     grossSales,
     unitsSold,
     productCost,
+    salesCOGS,
+    recoveredCOGS,
+    netProductCost,
     commission,
     vat,
     otherDarazCharges,
     returnsRefunds,
+    legacySaleRefunds,
+    returnModuleRefunds,
+    platformCoveredRefunds,
+    pendingReturnRefunds,
     operatingExpenses,
     accessoriesConsumed,
     grossProfit,
@@ -310,7 +453,7 @@ export async function getMonthlyTrend(months = 6): Promise<MonthlyPoint[]> {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
 
-  const [sales, expenses] = await Promise.all([
+  const [sales, expenses, returns, restocked] = await Promise.all([
     prisma.sale.findMany({
       where: { deletedAt: null, date: { gte: start } },
       select: {
@@ -321,6 +464,7 @@ export async function getMonthlyTrend(months = 6): Promise<MonthlyPoint[]> {
         vat: true,
         otherCharges: true,
         returnsRefunds: true,
+        unitCost: true,
         product: { select: { purchaseCost: true } },
       },
     }),
@@ -331,6 +475,27 @@ export async function getMonthlyTrend(months = 6): Promise<MonthlyPoint[]> {
         category: { notIn: DARAZ_DUP_CATEGORIES },
       },
       select: { date: true, amount: true },
+    }),
+    // Same eligibility rule as getFinancials — seller-borne settled refunds only.
+    prisma.return.findMany({
+      where: { ...eligibleReturnWhere(), returnDate: { gte: start } },
+      select: { returnDate: true, refundAmount: true },
+    }),
+    // Recovered COGS — restocked units, dated by receivedAt (same as getFinancials).
+    prisma.return.findMany({
+      where: {
+        deletedAt: null,
+        inventoryStatus: 'RESTOCKED',
+        receivedAt: { gte: start },
+      },
+      select: {
+        receivedAt: true,
+        quantity: true,
+        unitCost: true,
+        inventoryStatus: true,
+        deletedAt: true,
+        product: { select: { purchaseCost: true } },
+      },
     }),
   ]);
 
@@ -355,7 +520,11 @@ export async function getMonthlyTrend(months = 6): Promise<MonthlyPoint[]> {
     p.sales += s.grossAmount;
     p.profit +=
       s.grossAmount -
-      s.quantitySold * (s.product?.purchaseCost ?? 0) -
+      saleCogs({
+        quantitySold: s.quantitySold,
+        unitCost: s.unitCost,
+        productPurchaseCost: s.product?.purchaseCost,
+      }) -
       s.commission -
       s.vat -
       s.otherCharges -
@@ -365,6 +534,26 @@ export async function getMonthlyTrend(months = 6): Promise<MonthlyPoint[]> {
     const key = `${e.date.getFullYear()}-${e.date.getMonth()}`;
     const p = index.get(key);
     if (p) p.profit -= e.amount;
+  }
+  // Bucketed by returnDate, matching the P&L reporting period.
+  for (const r of returns) {
+    const key = `${r.returnDate.getFullYear()}-${r.returnDate.getMonth()}`;
+    const p = index.get(key);
+    if (p) p.profit -= r.refundAmount;
+  }
+  // Recovered COGS adds profit back, bucketed by receivedAt.
+  for (const r of restocked) {
+    if (!r.receivedAt) continue;
+    const key = `${r.receivedAt.getFullYear()}-${r.receivedAt.getMonth()}`;
+    const p = index.get(key);
+    if (p)
+      p.profit += returnRecoveredCogs({
+        inventoryStatus: r.inventoryStatus,
+        deletedAt: r.deletedAt,
+        quantity: r.quantity,
+        unitCost: r.unitCost,
+        productPurchaseCost: r.product?.purchaseCost,
+      });
   }
 
   return buckets.map((b) => ({
