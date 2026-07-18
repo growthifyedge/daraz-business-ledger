@@ -66,6 +66,30 @@ enum CashParty {
   OWNER
 }
 
+// Who bears the cost of a return refund.
+enum ReturnChargedTo {
+  SELLER // deducted from seller (your cost)
+  PLATFORM // absorbed by Daraz
+  PENDING // not yet refunded / decided
+}
+
+// Where the refund itself stands. Only COMPLETED refunds are financial events.
+enum ReturnRefundStatus {
+  PENDING // raised, money not yet moved — never counted as a loss
+  COMPLETED // refund settled
+  CANCELLED // return withdrawn / refund refused — never a loss
+}
+
+// Where the physical unit stands. Drives every stock effect; a unit lives in
+// exactly one bucket at a time.
+enum ReturnInventoryStatus {
+  NOT_RECEIVED // still with the buyer / in transit — no stock effect
+  RECEIVED_PENDING_QC // back in hand, not yet inspected — returnedStock only
+  RESTOCKED // passed QC, sellable again — currentStock via one RETURNED movement
+  DAMAGED // failed QC — damagedStock only
+  LOST // never arrived / lost in transit — lostStock only
+}
+
 // ---------------------------------------------------------------------------
 // Auth / Users
 // ---------------------------------------------------------------------------
@@ -102,6 +126,7 @@ model Store {
   expenses    Expense[]
   settlements Settlement[]
   movements   StockMovement[]
+  returns     Return[]
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +155,7 @@ model Product {
   purchases Purchase[]
   sales     Sale[]
   movements StockMovement[]
+  returns   Return[]
 }
 
 // Join table: a product can be available in one or many stores.
@@ -205,12 +231,21 @@ model Sale {
   productId      String
   product        Product   @relation(fields: [productId], references: [id])
   quantitySold   Int
+  /// Per-unit cost captured AT SALE TIME. Snapshot so historical COGS stays
+  /// stable when Product.purchaseCost later changes. Null on legacy rows, which
+  /// fall back to Product.purchaseCost for backward compatibility only.
+  unitCost       Float? // snapshot of cost/unit when the sale was recorded
   grossAmount    Float // gross sale amount
   commission     Float     @default(0) // Daraz commission
   vat            Float     @default(0)
   otherCharges   Float     @default(0) // other Daraz charges
+  /// Legacy inline refund field. HISTORICAL ONLY — no longer writable from the
+  /// Sales form: `saveSale` stores 0 on create and preserves the existing value
+  /// on edit. Every new refund is recorded in the Returns module instead, which
+  /// is what keeps the two sources from double-counting in P&L.
   returnsRefunds Float     @default(0)
   netAmount      Float // net received / settlement amount
+  returns        Return[]
   notes          String?
   createdById    String?
   createdBy      String?
@@ -294,6 +329,70 @@ model Settlement {
 
   @@index([date])
   @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Returns & refunds (from Daraz Seller Center → Returns)
+// ---------------------------------------------------------------------------
+
+model Return {
+  id            String    @id @default(cuid())
+  returnDate    DateTime // when the return was raised — the financial reporting date
+  orderDate     DateTime? // original order date
+  orderNumber   String? // Daraz order number
+  returnOrderId String? // Daraz Return Order ID (repeats across line items)
+  returnItemId  String?   @unique // Daraz Return Item ID — line-level identity
+  orderItemId   String? // Daraz Order Item ID — one per ordered unit
+  receivedAt    DateTime? // when the unit was physically received back
+
+  storeId   String?
+  store     Store?   @relation(fields: [storeId], references: [id])
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+  // Optional link back to the originating sale. Used to block double-counting
+  // against the legacy Sale.returnsRefunds field.
+  saleId    String?
+  sale      Sale?    @relation(fields: [saleId], references: [id])
+
+  buyerName    String?
+  sellerSku    String? // Daraz seller SKU / variant
+  quantity     Int     @default(1)
+  /// Per-unit cost of the returned item, snapshotted when the return is saved.
+  /// Used to recover COGS when the unit is RESTOCKED. Defaults from the linked
+  /// Sale.unitCost (or Product.purchaseCost), then frozen — a later change to
+  /// Product.purchaseCost never rewrites it.
+  unitCost     Float? // snapshot of cost/unit for COGS recovery
+  paidAmount   Float   @default(0) // paid price + shipping fee
+  refundAmount Float   @default(0)
+
+  chargedTo       ReturnChargedTo       @default(PENDING) // who bears the cost
+  refundStatus    ReturnRefundStatus    @default(PENDING) // financial lifecycle
+  inventoryStatus ReturnInventoryStatus @default(NOT_RECEIVED) // physical lifecycle
+
+  reason         String?
+  status         String? // raw Daraz status — informational only, drives no logic
+  logisticStatus String? // raw Daraz logistic status — informational only
+  trackingNumber String?
+
+  /// @deprecated Superseded by `inventoryStatus`. Retained only for additive
+  /// database compatibility with the already-deployed table. Application logic
+  /// must never read or write it.
+  restocked Boolean @default(false)
+
+  notes       String?
+  createdById String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@unique([returnOrderId, orderItemId])
+  @@index([returnDate])
+  @@index([productId])
+  @@index([storeId])
+  @@index([saleId])
+  @@index([returnOrderId])
+  @@index([refundStatus, chargedTo, deletedAt])
 }
 
 // ---------------------------------------------------------------------------

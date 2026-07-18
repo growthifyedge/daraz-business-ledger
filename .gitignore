@@ -57,3 +57,9 @@ $RECYCLE.BIN/
 
 # certs
 *.pem
+
+# private import source data — never commit real Daraz return/customer records
+*.private.json
+/scripts/returns-input*.json
+/scripts/*.private.*
+/private/

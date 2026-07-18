@@ -32,6 +32,9 @@ interface Opt {
   id: string;
   name: string;
 }
+interface ProductOpt extends Opt {
+  purchaseCost: number;
+}
 interface SaleRow {
   id: string;
   date: string;
@@ -40,6 +43,7 @@ interface SaleRow {
   productId: string;
   productName: string;
   quantitySold: number;
+  unitCost: number | null;
   grossAmount: number;
   commission: number;
   vat: number;
@@ -57,7 +61,7 @@ export function SalesManager({
   meta,
 }: {
   sales: SaleRow[];
-  products: Opt[];
+  products: ProductOpt[];
   stores: Opt[];
   totals: { gross: number; net: number; units: number };
   meta: PageMeta;
@@ -74,6 +78,19 @@ export function SalesManager({
   const [returns, setReturns] = useState(0);
   const net = gross - commission - vat - other - returns;
 
+  // Cost snapshot. `unitCostOriginal` records what was loaded so the server can
+  // tell whether the operator changed it (preserve-unless-changed).
+  const [productId, setProductId] = useState('');
+  const [unitCost, setUnitCost] = useState('');
+  const [unitCostOriginal, setUnitCostOriginal] = useState('');
+
+  function onProductChange(id: string) {
+    setProductId(id);
+    // Suggest the newly-selected product's current purchase cost.
+    const p = products.find((x) => x.id === id);
+    if (p) setUnitCost(String(p.purchaseCost));
+  }
+
   useEffect(() => {
     if (state.ok) {
       setOpen(false);
@@ -87,6 +104,12 @@ export function SalesManager({
     setVat(row?.vat ?? 0);
     setOther(row?.otherCharges ?? 0);
     setReturns(row?.returnsRefunds ?? 0);
+    setProductId(row?.productId ?? '');
+    // Editing: show the stored snapshot (blank for legacy null, so an untouched
+    // save preserves the null). New: blank until a product is chosen.
+    const loaded = row && row.unitCost !== null ? String(row.unitCost) : '';
+    setUnitCost(loaded);
+    setUnitCostOriginal(loaded);
   }
   function openNew() {
     setEditing(null);
@@ -136,7 +159,7 @@ export function SalesManager({
               { key: 'commission', label: 'Commission', money: true },
               { key: 'vat', label: 'VAT', money: true },
               { key: 'other', label: 'Other', money: true },
-              { key: 'returns', label: 'Returns', money: true },
+              { key: 'returns', label: 'Returns (legacy)', money: true },
               { key: 'net', label: 'Net', money: true },
             ]}
             rows={exportRows}
@@ -268,7 +291,12 @@ export function SalesManager({
               </Select>
             </Field>
             <Field label="Product" required>
-              <Select name="productId" defaultValue={editing?.productId ?? ''} required>
+              <Select
+                name="productId"
+                value={productId}
+                onChange={(e) => onProductChange(e.target.value)}
+                required
+              >
                 <option value="">Select product…</option>
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -284,6 +312,24 @@ export function SalesManager({
                 min="1"
                 defaultValue={editing?.quantitySold ?? ''}
                 required
+              />
+            </Field>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Cost per unit (Rs)"
+              hint="Snapshotted at sale time — later product cost changes won't alter this sale's profit. Defaults from the product; correct it if needed."
+            >
+              <input type="hidden" name="unitCostOriginal" value={unitCostOriginal} />
+              <Input
+                name="unitCost"
+                type="number"
+                step="0.01"
+                min="0"
+                value={unitCost}
+                onChange={(e) => setUnitCost(e.target.value)}
+                placeholder="0.00"
               />
             </Field>
           </div>
@@ -330,17 +376,27 @@ export function SalesManager({
                 onChange={(e) => setOther(Number(e.target.value) || 0)}
               />
             </Field>
-            <Field label="Returns / refunds deduction">
-              <Input
-                name="returnsRefunds"
-                type="number"
-                step="0.01"
-                min="0"
-                defaultValue={editing?.returnsRefunds ?? 0}
-                onChange={(e) => setReturns(Number(e.target.value) || 0)}
-              />
-            </Field>
+            {editing && editing.returnsRefunds > 0 && (
+              <Field
+                label="Returns / refunds (legacy — read only)"
+                hint="Recorded before the Returns module existed. Preserved as-is and still deducted from this sale's net amount."
+              >
+                <Input
+                  type="text"
+                  value={formatMoney(editing.returnsRefunds)}
+                  readOnly
+                  disabled
+                />
+              </Field>
+            )}
           </div>
+
+          <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Recording a refund? Add it in <strong>Returns &amp; Refunds</strong>, not here.
+            Returns is the single source for every new refund — it tracks who bears the
+            cost and where the returned unit ended up, and only seller-borne completed
+            refunds reduce profit.
+          </p>
 
           <div className="flex items-center justify-between rounded-lg bg-emerald-50 px-4 py-3">
             <span className="text-sm font-medium text-emerald-800">

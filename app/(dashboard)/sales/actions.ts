@@ -27,20 +27,42 @@ export async function saveSale(
   const commission = num(formData.get('commission'));
   const vat = num(formData.get('vat'));
   const otherCharges = num(formData.get('otherCharges'));
-  const returnsRefunds = num(formData.get('returnsRefunds'));
   const notes = str(formData.get('notes'));
+
+  // Cost snapshot. `unitCost` is the submitted value; `unitCostOriginal` is what
+  // the form loaded, so we can tell whether the operator actually changed it.
+  const unitCostRaw = str(formData.get('unitCost'));
+  const unitCostOriginalRaw = str(formData.get('unitCostOriginal'));
+  const unitCostChanged = unitCostRaw !== unitCostOriginalRaw;
+  const submittedUnitCost = unitCostRaw === null ? null : Number(unitCostRaw);
 
   if (!productId) return fail('Choose a product.');
   if (!dateStr) return fail('Sale date is required.');
   if (quantitySold <= 0) return fail('Quantity sold must be greater than zero.');
+  if (
+    submittedUnitCost !== null &&
+    (isNaN(submittedUnitCost) || submittedUnitCost < 0)
+  ) {
+    return fail('Cost per unit cannot be negative.');
+  }
 
   const date = new Date(dateStr);
-  const netAmount = grossAmount - commission - vat - otherCharges - returnsRefunds;
 
   try {
     if (id) {
       const before = await prisma.sale.findUnique({ where: { id } });
       if (!before) return fail('Sale not found.');
+
+      // `returnsRefunds` is no longer editable. Preserve whatever this sale has
+      // historically carried and recalculate netAmount from it — never silently
+      // clear a real refund that predates the Returns module.
+      const returnsRefunds = before.returnsRefunds;
+      const netAmount =
+        grossAmount - commission - vat - otherCharges - returnsRefunds;
+
+      // Preserve the stored snapshot unless the operator explicitly changed it
+      // (this keeps a legacy null null when untouched).
+      const unitCost = unitCostChanged ? submittedUnitCost : before.unitCost;
 
       // Pre-check stock so the user gets a clear message before we mutate.
       const target = await prisma.product.findUnique({
@@ -65,11 +87,13 @@ export async function saveSale(
             storeId,
             productId,
             quantitySold,
+            unitCost,
             grossAmount,
             commission,
             vat,
             otherCharges,
-            returnsRefunds,
+            // returnsRefunds intentionally not written — the stored historical
+            // value is preserved as-is.
             netAmount,
             notes,
           },
@@ -122,12 +146,22 @@ export async function saveSale(
       // Pre-check stock before recording a new sale.
       const target = await prisma.product.findUnique({
         where: { id: productId },
-        select: { name: true, currentStock: true },
+        select: { name: true, currentStock: true, purchaseCost: true },
       });
       if (!target) return fail('Product not found.');
       if (quantitySold > target.currentStock) {
         return fail(shortMsg(target.name, target.currentStock));
       }
+
+      // New sales never carry a legacy refund — refunds belong in Returns.
+      const netAmount = grossAmount - commission - vat - otherCharges;
+
+      // Capture the cost snapshot at sale time. Use the operator's value if
+      // supplied, otherwise the product's current purchase cost.
+      const unitCost =
+        submittedUnitCost !== null && !isNaN(submittedUnitCost)
+          ? submittedUnitCost
+          : target.purchaseCost;
 
       const created = await prisma.$transaction(async (tx) => {
         const s = await tx.sale.create({
@@ -136,11 +170,12 @@ export async function saveSale(
             storeId,
             productId,
             quantitySold,
+            unitCost, // cost snapshot — stable against later purchaseCost changes
             grossAmount,
             commission,
             vat,
             otherCharges,
-            returnsRefunds,
+            returnsRefunds: 0, // locked: record refunds in Returns & Refunds
             netAmount,
             notes,
             createdById: user.id,

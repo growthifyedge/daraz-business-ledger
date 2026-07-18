@@ -39,7 +39,9 @@ export default async function ProfitLossPage({
   // Flattened rows for CSV / PDF export (plain numbers only).
   const exportRows = [
     { item: 'Gross Sales', amount: fin.grossSales },
-    { item: 'Product Cost (COGS)', amount: -fin.productCost },
+    { item: 'Sales COGS', amount: -fin.salesCOGS },
+    { item: 'Recovered COGS (restocked)', amount: fin.recoveredCOGS },
+    { item: 'Net Product Cost', amount: -fin.netProductCost },
     { item: 'Gross Profit', amount: fin.grossProfit },
     { item: 'Daraz Commission', amount: -fin.commission },
     { item: 'VAT', amount: -fin.vat },
@@ -86,9 +88,16 @@ export default async function ProfitLossPage({
                 amount={fin.grossSales}
                 bold
               />
+              <PnlLine label="Sales COGS" amount={fin.salesCOGS} deduction />
+              {fin.recoveredCOGS > 0 && (
+                <PnlLine
+                  label="Recovered COGS (restocked returns)"
+                  amount={fin.recoveredCOGS}
+                />
+              )}
               <PnlLine
-                label="Product Cost (COGS)"
-                amount={fin.productCost}
+                label="Net Product Cost"
+                amount={fin.netProductCost}
                 deduction
               />
               <PnlLine
@@ -108,7 +117,7 @@ export default async function ProfitLossPage({
                 deduction
               />
               <PnlLine
-                label="Returns / Refunds"
+                label="Returns / Refunds (seller-borne)"
                 amount={fin.returnsRefunds}
                 deduction
               />

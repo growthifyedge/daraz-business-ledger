@@ -39,7 +39,7 @@ export default async function SalesPage({
     prisma.product.findMany({
       where: { deletedAt: null, active: true },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true },
+      select: { id: true, name: true, purchaseCost: true },
     }),
     prisma.store.findMany({
       where: { deletedAt: null },
@@ -56,6 +56,7 @@ export default async function SalesPage({
     productId: s.productId,
     productName: s.product.name,
     quantitySold: s.quantitySold,
+    unitCost: s.unitCost,
     grossAmount: s.grossAmount,
     commission: s.commission,
     vat: s.vat,
