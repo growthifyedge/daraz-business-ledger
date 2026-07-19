@@ -148,6 +148,11 @@ export default async function DashboardPage() {
                 {formatMoney(cash.stockPurchaseUnpaid)} owed to Yahya (unpaid)
               </p>
             )}
+            {cash.reconciliationPending > 0 && (
+              <p className="mt-1 font-semibold text-sky-200">
+                {formatMoney(cash.reconciliationPending)} payment reconciliation pending
+              </p>
+            )}
           </div>
         </CardBody>
       </Card>

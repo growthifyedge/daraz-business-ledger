@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { parseFilter, rangeLabel, type SearchParams } from '@/lib/filters';
+import { summarizePurchasePayments } from '@/lib/purchasePayments';
 import { FilterBar } from '@/components/FilterBar';
 import { ExportButtons } from '@/components/ExportButtons';
 import {
@@ -74,14 +75,15 @@ export default async function PurchasesReportPage({
     qty: p.quantity,
     unitCost: p.unitCost,
     total: p.totalCost,
-    status: humanize(p.paymentStatus),
+    status:
+      p.paymentStatus === 'RECONCILIATION_PENDING'
+        ? 'Payment reconciliation pending'
+        : humanize(p.paymentStatus),
     bankRef: p.bankReference ?? '',
   }));
 
   const total = purchases.reduce((a, p) => a + p.totalCost, 0);
-  const unpaid = purchases
-    .filter((p) => p.paymentStatus === 'UNPAID')
-    .reduce((a, p) => a + p.totalCost, 0);
+  const { owedToYahya: unpaid, reconciliationPending } = summarizePurchasePayments(purchases);
   const count = purchases.length;
 
   const columns = [
@@ -108,12 +110,17 @@ export default async function PurchasesReportPage({
 
       <FilterBar stores={stores} />
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total Purchased" value={formatMoney(total)} tone="brand" />
         <StatCard
           label="Unpaid (owed to Yahya)"
           value={formatMoney(unpaid)}
           tone={unpaid > 0 ? 'warning' : 'default'}
+        />
+        <StatCard
+          label="Payment reconciliation pending"
+          value={formatMoney(reconciliationPending)}
+          tone={reconciliationPending > 0 ? 'warning' : 'default'}
         />
         <StatCard label="Purchase Records" value={formatNumber(count)} />
       </div>

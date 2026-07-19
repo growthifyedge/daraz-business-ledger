@@ -20,7 +20,7 @@ export default async function PurchasesPage({
     ...searchFilter(q, ['product.name', 'bankReference', 'notes', 'purchasedBy']),
   };
 
-  const [purchases, count, totalAgg, unpaidAgg, products, stores] = await Promise.all([
+  const [purchases, count, totalAgg, unpaidAgg, pendingAgg, products, stores] = await Promise.all([
     prisma.purchase.findMany({
       where,
       orderBy: { date: 'desc' },
@@ -35,6 +35,10 @@ export default async function PurchasesPage({
     prisma.purchase.aggregate({ where, _sum: { totalCost: true } }),
     prisma.purchase.aggregate({
       where: { ...where, paymentStatus: 'UNPAID' },
+      _sum: { totalCost: true },
+    }),
+    prisma.purchase.aggregate({
+      where: { ...where, paymentStatus: 'RECONCILIATION_PENDING' },
       _sum: { totalCost: true },
     }),
     prisma.product.findMany({
@@ -75,6 +79,7 @@ export default async function PurchasesPage({
       totals={{
         total: totalAgg._sum.totalCost ?? 0,
         unpaid: unpaidAgg._sum.totalCost ?? 0,
+        reconciliationPending: pendingAgg._sum.totalCost ?? 0,
         count,
       }}
       meta={buildPageMeta({ page, pageSize, skip, take, q }, count)}

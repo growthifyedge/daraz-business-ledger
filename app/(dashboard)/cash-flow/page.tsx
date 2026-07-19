@@ -97,6 +97,12 @@ export default async function CashFlowPage({
           tone={cash.stockPurchaseUnpaid > 0 ? 'warning' : 'default'}
         />
         <StatCard
+          label="Payment reconciliation pending"
+          value={formatMoney(cash.reconciliationPending)}
+          hint="Not owed or paid — no cash impact"
+          tone={cash.reconciliationPending > 0 ? 'warning' : 'default'}
+        />
+        <StatCard
           label="Yahya Share Payable"
           value={formatMoney(payableYahya)}
           hint="Earned share − paid out"

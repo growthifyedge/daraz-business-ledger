@@ -45,7 +45,7 @@ interface PurchaseRow {
   quantity: number;
   unitCost: number;
   totalCost: number;
-  paymentStatus: 'PAID' | 'UNPAID';
+  paymentStatus: 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING';
   reimbursementDate: string | null;
   bankReference: string | null;
   invoiceUrl: string | null;
@@ -62,12 +62,12 @@ export function PurchasesManager({
   purchases: PurchaseRow[];
   products: Opt[];
   stores: Opt[];
-  totals: { total: number; unpaid: number; count: number };
+  totals: { total: number; unpaid: number; reconciliationPending: number; count: number };
   meta: PageMeta;
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<PurchaseRow | null>(null);
-  const [status, setStatus] = useState<'PAID' | 'UNPAID'>('UNPAID');
+  const [status, setStatus] = useState<'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING'>('UNPAID');
   const [state, formAction] = useActionState(savePurchase, initialFormState);
 
   useEffect(() => {
@@ -132,12 +132,18 @@ export function PurchasesManager({
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
         <StatCard
           label="Unpaid (owed to Yahya)"
           value={formatMoney(totals.unpaid)}
           tone={totals.unpaid > 0 ? 'warning' : 'default'}
+        />
+        <StatCard
+          label="Payment reconciliation pending"
+          value={formatMoney(totals.reconciliationPending)}
+          hint="Not owed or paid"
+          tone={totals.reconciliationPending > 0 ? 'warning' : 'default'}
         />
         <StatCard label="Purchase Records" value={formatNumber(totals.count)} />
       </div>
@@ -196,8 +202,18 @@ export function PurchasesManager({
                       {formatMoney(p.totalCost)}
                     </TD>
                     <TD align="center">
-                      <Badge tone={p.paymentStatus === 'PAID' ? 'green' : 'amber'}>
-                        {humanize(p.paymentStatus)}
+                      <Badge
+                        tone={
+                          p.paymentStatus === 'PAID'
+                            ? 'green'
+                            : p.paymentStatus === 'RECONCILIATION_PENDING'
+                              ? 'blue'
+                              : 'amber'
+                        }
+                      >
+                        {p.paymentStatus === 'RECONCILIATION_PENDING'
+                          ? 'Reconciliation pending'
+                          : humanize(p.paymentStatus)}
                       </Badge>
                     </TD>
                     <TD align="center">
@@ -312,10 +328,13 @@ export function PurchasesManager({
               <Select
                 name="paymentStatus"
                 value={status}
-                onChange={(e) => setStatus(e.target.value as 'PAID' | 'UNPAID')}
+                onChange={(e) =>
+                  setStatus(e.target.value as 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING')
+                }
               >
                 <option value="UNPAID">Unpaid</option>
                 <option value="PAID">Paid (reimbursed)</option>
+                <option value="RECONCILIATION_PENDING">Payment reconciliation pending</option>
               </Select>
             </Field>
             {status === 'PAID' && (

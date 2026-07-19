@@ -74,6 +74,11 @@ export default async function CashFlowReportPage({
         />
         <StatCard label="Unpaid Purchases" value={formatMoney(cf.stockPurchaseUnpaid)} tone="warning" />
         <StatCard
+          label="Payment reconciliation pending"
+          value={formatMoney(cf.reconciliationPending)}
+          tone={cf.reconciliationPending > 0 ? 'warning' : 'default'}
+        />
+        <StatCard
           label="Net Cash Balance"
           value={formatMoney(cf.netCashBalance)}
           tone={cf.netCashBalance >= 0 ? 'brand' : 'negative'}
