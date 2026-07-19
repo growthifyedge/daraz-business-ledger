@@ -151,11 +151,13 @@ model Product {
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
 
-  stores    ProductStore[]
-  purchases Purchase[]
-  sales     Sale[]
-  movements StockMovement[]
-  returns   Return[]
+  stores          ProductStore[]
+  purchases       Purchase[]
+  sales           Sale[]
+  movements       StockMovement[]
+  returns         Return[]
+  DarazOrderItem  DarazOrderItem[]
+  DarazSkuMapping DarazSkuMapping[]
 }
 
 // Join table: a product can be available in one or many stores.
@@ -448,4 +450,205 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([module])
+}
+
+// ===========================================================================
+// Daraz Orders + Income Import module (additive; not yet pushed to production)
+// ===========================================================================
+// Nothing in the app writes to these models yet — the Import page is dry-run
+// only. They define the persistent shape for when import is enabled.
+
+/// Fee categories. Every Daraz fee keeps its ORIGINAL label in DarazIncomeFee.label;
+/// this enum only groups it so P&L can keep commission / payment / shipping /
+/// handling / vouchers / coins / the two withholding taxes / refunds / reversals
+/// strictly separate. Never collapse these into a single "commission".
+enum DarazFeeCategory {
+  PRODUCT_REVENUE // Product Price Paid by Buyer
+  BUYER_SHIPPING_CREDIT // Shipping Fee Paid by Buyer
+  COMMISSION // Commission Fee (ONLY this)
+  PAYMENT_FEE // Payment Fee
+  SHIPPING_FEE // Shipping Fee (logistics charged to seller)
+  FREE_SHIPPING_MAX_FEE // Free Shipping Max Fee
+  HANDLING_FEE // Handling Fee
+  COINS_PARTICIPATION // Daraz Coins Discount Participation Fee
+  VOUCHER_PARTICIPATION // Co-funded Voucher Max
+  SHIPPING_DISCOUNT // Shipping Fee Discount
+  INCOME_TAX_WHT // Income Tax Withholding
+  SALES_TAX_WHT // Sales Tax Withholding
+  REFUND // *Refunded* fee lines
+  REVERSAL // *Reversal of* fee lines
+  OTHER // anything unrecognised — surfaced for review, never silently dropped
+}
+
+enum DarazImportStatus {
+  DRY_RUN // previewed only, never written
+  COMMITTED // reserved for when import is enabled
+}
+
+/// One upload session. `fingerprint` (hash of both files' content) makes
+/// re-uploading identical files a no-op — idempotency at the batch level.
+model DarazImportBatch {
+  id               String            @id @default(cuid())
+  fingerprint      String            @unique // sha256(ordersHash + incomeHash)
+  ordersFileName   String
+  ordersFileHash   String
+  incomeFileName   String
+  incomeFileHash   String
+  status           DarazImportStatus @default(DRY_RUN)
+  totalOrderItems  Int               @default(0)
+  totalIncomeLines Int               @default(0)
+  matchedLines     Int               @default(0)
+  unmatchedLines   Int               @default(0)
+  duplicateLines   Int               @default(0)
+  unresolvedSkus   Int               @default(0)
+  reconDiff        Float             @default(0)
+  createdById      String?
+  createdBy        String?
+  createdAt        DateTime          @default(now())
+
+  orderItems  DarazOrderItem[]
+  incomeLines DarazIncomeLine[]
+
+  @@index([createdAt])
+}
+
+/// Confidential customer identity. OWNER/ADMIN access only; phone and
+/// nationalRegistrationNumber are masked in the UI by default and every
+/// view/reveal/edit/export is audit-logged. Never logged, never in fixtures/Git.
+model DarazCustomer {
+  id String @id @default(cuid())
+  // ---- All PII columns store AES-256-GCM CIPHERTEXT (lib/daraz/crypto), never
+  // readable plaintext. Decryption is server-only, owner/admin, audit-logged.
+  nameEnc                    String? // encrypted
+  emailEnc                   String? // encrypted
+  phoneEnc                   String? // encrypted
+  nationalRegistrationEnc    String? // encrypted
+  // ---- Blind indexes (keyed HMAC-SHA256): one-way, for equality search only.
+  // They store NO searchable plaintext and cannot be reversed to the value.
+  phoneHash String? // blindIndex(phone)
+  emailHash String? // blindIndex(email)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderItems DarazOrderItem[]
+
+  @@index([phoneHash])
+  @@index([emailHash])
+}
+
+/// One physical unit (one row per unique Daraz orderItemId). Quantity is always
+/// 1 per orderItemId; multi-unit orders are multiple rows. Holds the order,
+/// tracking, shipping and billing snapshot; customer identity links to DarazCustomer.
+model DarazOrderItem {
+  id            String    @id @default(cuid())
+  orderItemId   String    @unique // Daraz Order Item ID — the idempotency key + income join key
+  orderNumber   String
+  sellerSku     String?
+  lazadaSku     String?
+  itemName      String?
+  variation     String?
+  quantity      Int       @default(1)
+  unitPrice     Float     @default(0)
+  paidPrice     Float     @default(0)
+  status        String?
+  createTime    DateTime?
+  deliveredDate DateTime?
+
+  // tracking / logistics — CIPHERTEXT (AES-256-GCM), server-only decryption
+  trackingCodeEnc     String?
+  trackingUrlEnc      String?
+  shippingProvider    String? // not PII — carrier name kept readable
+
+  // shipping + billing snapshot — all CIPHERTEXT (AES-256-GCM)
+  shippingNameEnc     String?
+  shippingAddressEnc  String?
+  shippingPhoneEnc    String?
+  shippingCityEnc     String?
+  shippingPostCodeEnc String?
+  billingNameEnc      String?
+  billingAddressEnc   String?
+  billingPhoneEnc     String?
+  billingCityEnc      String?
+  shippingPhoneHash   String? // blindIndex for search
+
+  customerId    String?
+  customer      DarazCustomer?    @relation(fields: [customerId], references: [id])
+  productId     String? // resolved ledger Product (via DarazSkuMapping)
+  product       Product?          @relation(fields: [productId], references: [id])
+  importBatchId String?
+  importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
+  incomeLine    DarazIncomeLine?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderNumber])
+  @@index([sellerSku])
+  @@index([customerId])
+  @@index([productId])
+}
+
+/// One income line per orderItemId (aggregated from the long fee format).
+/// Daraz income is authoritative for revenue/fees/refunds/reversals.
+model DarazIncomeLine {
+  id                  String    @id @default(cuid())
+  orderItemId         String    @unique // join key + idempotency
+  orderNumber         String?
+  sellerSku           String?
+  productName         String?
+  statementNumber     String?
+  statementPeriod     String?
+  transactionDate     DateTime?
+  orderCreationDate   DateTime?
+  orderStatus         String?
+  releaseStatus       String?
+  productPriceRevenue Float     @default(0)
+  buyerShippingCredit Float     @default(0)
+  totalCredits        Float     @default(0)
+  totalDeductions     Float     @default(0)
+  netAmount           Float     @default(0) // Daraz-authoritative net
+  reconciled          Boolean   @default(false)
+
+  orderItem     DarazOrderItem?   @relation(fields: [orderItemId], references: [orderItemId])
+  importBatchId String?
+  importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
+  fees          DarazIncomeFee[]
+
+  createdAt DateTime @default(now())
+
+  @@index([orderNumber])
+  @@index([statementNumber])
+  @@index([sellerSku])
+}
+
+/// Every original Daraz fee row, preserved verbatim (label + amount + VAT),
+/// categorised without losing the label.
+model DarazIncomeFee {
+  id           String           @id @default(cuid())
+  incomeLineId String
+  incomeLine   DarazIncomeLine  @relation(fields: [incomeLineId], references: [id], onDelete: Cascade)
+  label        String // ORIGINAL Daraz "Fee Name", verbatim
+  category     DarazFeeCategory
+  amount       Float
+  vatAmount    Float            @default(0)
+  isRefund     Boolean          @default(false)
+  isReversal   Boolean          @default(false)
+
+  @@index([incomeLineId])
+  @@index([category])
+}
+
+/// Persistent Seller-SKU → ledger Product mapping. Created once, reused across
+/// imports. Never auto-guessed from names — an operator sets it explicitly.
+model DarazSkuMapping {
+  id          String   @id @default(cuid())
+  sellerSku   String   @unique
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  createdById String?
+  createdBy   String?
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([productId])
 }

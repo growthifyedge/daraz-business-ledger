@@ -18,6 +18,7 @@ import {
   Wallet,
   ShieldCheck,
   DatabaseBackup,
+  UploadCloud,
   Menu,
   LogOut,
   ChevronDown,
@@ -43,6 +44,7 @@ const NAV = [
 ] as const;
 
 const OWNER_NAV = [
+  { href: '/import', label: 'Daraz Import', icon: UploadCloud },
   { href: '/audit-log', label: 'Audit Log', icon: ShieldCheck },
   { href: '/backup', label: 'Backup & Export', icon: DatabaseBackup },
 ] as const;
