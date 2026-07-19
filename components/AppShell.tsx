@@ -18,6 +18,8 @@ import {
   Wallet,
   ShieldCheck,
   DatabaseBackup,
+  UploadCloud,
+  FileText,
   Menu,
   LogOut,
   ChevronDown,
@@ -37,12 +39,14 @@ const NAV = [
   { href: '/expenses', label: 'Expenses', icon: Receipt },
   { href: '/accessories', label: 'Accessories', icon: Boxes },
   { href: '/settlements', label: 'Daraz Settlements', icon: Banknote },
+  { href: '/statements', label: 'Daraz Statements', icon: FileText },
   { href: '/profit-loss', label: 'Profit & Loss', icon: PieChart },
   { href: '/cash-flow', label: 'Cash Flow', icon: Wallet },
   { href: '/reports', label: 'Reports', icon: FileBarChart },
 ] as const;
 
 const OWNER_NAV = [
+  { href: '/import', label: 'Daraz Import', icon: UploadCloud },
   { href: '/audit-log', label: 'Audit Log', icon: ShieldCheck },
   { href: '/backup', label: 'Backup & Export', icon: DatabaseBackup },
 ] as const;

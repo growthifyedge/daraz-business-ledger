@@ -207,6 +207,44 @@ export function sellerLossOf(
 }
 
 // ---------------------------------------------------------------------------
+// Daraz-import refund authority (approved rule)
+//
+// When a Return is linked to an imported Daraz Income line, the Daraz Income
+// statement is the authoritative source for the financial refund/reversal — it
+// already carries REFUND / REVERSAL fee rows that flow into the imported net.
+// Such a linked Return governs inventory / QC and recovered COGS ONLY; its
+// refund must NOT be subtracted from P&L again, or the loss double-counts.
+//
+// Unlinked / manually-entered Returns are unaffected: they keep the existing
+// eligibility behaviour above (isEligibleForPnl / sellerLossOf).
+// ---------------------------------------------------------------------------
+
+export interface RefundPnlInput extends RefundEligibilityInput {
+  /**
+   * True when this return is linked to an imported Daraz Income line whose
+   * statement already accounts for the refund/reversal financially.
+   */
+  linkedToImportedIncome: boolean;
+}
+
+/**
+ * Whether this return's refund should reduce P&L. False for returns linked to
+ * imported Daraz income (the income statement already booked the refund),
+ * otherwise falls back to the normal eligibility rule.
+ */
+export function refundCountsInPnl(r: RefundPnlInput): boolean {
+  if (r.linkedToImportedIncome) return false;
+  return isEligibleForPnl(r);
+}
+
+/** Seller P&L loss for a return, honouring the Daraz-import refund authority. */
+export function sellerLossForPnl(
+  r: RefundPnlInput & { refundAmount: number }
+): number {
+  return refundCountsInPnl(r) ? r.refundAmount : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Cost snapshots & COGS
 // ---------------------------------------------------------------------------
 
