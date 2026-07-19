@@ -10,11 +10,20 @@ export default async function ImportPage() {
   // Owner only — this flow handles confidential customer data.
   await requireOwner();
 
-  const committedBatches = await prisma.darazImportBatch.count({
-    where: { status: 'COMMITTED' },
-  });
+  const [products, committedBatches] = await Promise.all([
+    prisma.product.findMany({
+      where: { deletedAt: null, active: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, sku: true },
+    }),
+    prisma.darazImportBatch.count({ where: { status: 'COMMITTED' } }),
+  ]);
 
   return (
-    <ImportManager piiKeyReady={piiKeyConfigured()} hasCommittedImport={committedBatches > 0} />
+    <ImportManager
+      products={products}
+      piiKeyReady={piiKeyConfigured()}
+      hasCommittedImport={committedBatches > 0}
+    />
   );
 }

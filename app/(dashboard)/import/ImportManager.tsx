@@ -1,7 +1,16 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { UploadCloud, AlertTriangle, Lock, CheckCircle2, ShieldCheck, Database } from 'lucide-react';
+import Link from 'next/link';
+import {
+  UploadCloud,
+  AlertTriangle,
+  Lock,
+  CheckCircle2,
+  ShieldCheck,
+  Database,
+  ExternalLink,
+} from 'lucide-react';
 import { Button } from '@/components/Button';
 import {
   Card,
@@ -10,6 +19,7 @@ import {
   StatCard,
   Field,
   Input,
+  Select,
   Table,
   THead,
   TH,
@@ -25,6 +35,13 @@ import {
   type DryRunResult,
   type Unavailable,
 } from '@/lib/daraz/dryrun';
+import { saveDarazSkuMapping } from './actions';
+
+interface ProductOpt {
+  id: string;
+  name: string;
+  sku: string;
+}
 
 interface PreviewMeta {
   ordersFileName: string;
@@ -48,9 +65,11 @@ interface CommitSummary {
 }
 
 export function ImportManager({
+  products,
   piiKeyReady,
   hasCommittedImport,
 }: {
+  products: ProductOpt[];
   piiKeyReady: boolean;
   hasCommittedImport: boolean;
 }) {
@@ -63,8 +82,42 @@ export function ImportManager({
   const [committed, setCommitted] = useState<CommitSummary | 'already' | null>(null);
   const [pending, startTransition] = useTransition();
   const [committing, setCommitting] = useState(false);
+  // In-session mapping state: per-SKU selected productId, saved productId, errors.
+  const [picks, setPicks] = useState<Record<string, string>>({});
+  const [mapped, setMapped] = useState<Record<string, string>>({});
+  const [savingSku, setSavingSku] = useState<string | null>(null);
+  const [mapError, setMapError] = useState<Record<string, string>>({});
 
   const r = preview?.result;
+
+  function saveMapping(sellerSku: string) {
+    const productId = picks[sellerSku];
+    if (!productId) {
+      setMapError((m) => ({ ...m, [sellerSku]: 'Choose a ledger product first.' }));
+      return;
+    }
+    setSavingSku(sellerSku);
+    setMapError((m) => ({ ...m, [sellerSku]: '' }));
+    (async () => {
+      try {
+        const res = await saveDarazSkuMapping(sellerSku, productId);
+        if (res.ok) {
+          setMapped((m) => ({ ...m, [sellerSku]: productId }));
+        } else {
+          setMapError((m) => ({ ...m, [sellerSku]: res.error ?? 'Could not save mapping.' }));
+        }
+      } catch {
+        setMapError((m) => ({ ...m, [sellerSku]: 'Network error while saving mapping.' }));
+      } finally {
+        setSavingSku(null);
+      }
+    })();
+  }
+
+  const productName = (id: string) => {
+    const p = products.find((x) => x.id === id);
+    return p ? `${p.name} (${p.sku})` : id;
+  };
 
   function buildForm(): FormData | null {
     if (!files.orders || !files.income) {
@@ -307,37 +360,106 @@ export function ImportManager({
             </CardBody>
           </Card>
 
-          {/* --- unresolved SKUs (informational; import does NOT wait) --- */}
-          <Card className="mb-4">
-            <CardHeader
-              title={`Unresolved Seller SKUs (${r.unresolvedSkuList.length})`}
-              subtitle="Statements, orders and customers import now with productId = null. Map each SKU (Products → mapping) to later post stock/COGS/P&L."
-            />
-            <CardBody className="p-0">
-              {r.unresolvedSkuList.length === 0 ? (
-                <div className="p-5 text-sm text-emerald-600">All Seller SKUs resolve to a ledger product.</div>
-              ) : (
-                <Table>
-                  <THead>
-                    <TRow>
-                      <TH>Seller SKU</TH>
-                      <TH>Daraz product</TH>
-                      <TH align="center">Units</TH>
-                    </TRow>
-                  </THead>
-                  <tbody>
-                    {r.unresolvedSkuList.map((u) => (
-                      <TRow key={u.sellerSku}>
-                        <TD className="font-mono text-xs">{u.sellerSku || '—'}</TD>
-                        <TD className="max-w-[320px] truncate text-slate-500">{u.productName}</TD>
-                        <TD align="center">{u.units}</TD>
-                      </TRow>
-                    ))}
-                  </tbody>
-                </Table>
-              )}
-            </CardBody>
-          </Card>
+          {/* --- unresolved SKUs — map each Seller SKU to a ledger product --- */}
+          {(() => {
+            const remaining = r.unresolvedSkuList.filter((u) => !mapped[u.sellerSku]);
+            return (
+              <Card className="mb-4">
+                <CardHeader
+                  title={`Unresolved Seller SKUs (${remaining.length})`}
+                  subtitle="Map each Seller SKU to a ledger product. Mappings persist and apply on the next dry-run/import — this does not change stock, sales, COGS or P&L now. Multiple SKUs/variants may map to the same product."
+                />
+                <CardBody className="p-0">
+                  {r.unresolvedSkuList.length === 0 ? (
+                    <div className="p-5 text-sm text-emerald-600">All Seller SKUs resolve to a ledger product.</div>
+                  ) : products.length === 0 ? (
+                    <div className="flex items-center justify-between gap-2 p-5 text-sm text-amber-700">
+                      <span>No active ledger products exist yet — create one before mapping.</span>
+                      <Link href="/products" target="_blank" className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700">
+                        <ExternalLink className="h-3.5 w-3.5" /> Open Products
+                      </Link>
+                    </div>
+                  ) : (
+                    <Table>
+                      <THead>
+                        <TRow>
+                          <TH>Seller SKU</TH>
+                          <TH>Daraz product</TH>
+                          <TH align="center">Units</TH>
+                          <TH>Ledger product</TH>
+                          <TH align="right">Action</TH>
+                        </TRow>
+                      </THead>
+                      <tbody>
+                        {r.unresolvedSkuList.map((u) => {
+                          const isMapped = !!mapped[u.sellerSku];
+                          return (
+                            <TRow key={u.sellerSku}>
+                              <TD className="font-mono text-xs">{u.sellerSku || '—'}</TD>
+                              <TD className="max-w-[280px] truncate text-slate-500">{u.productName}</TD>
+                              <TD align="center">{u.units}</TD>
+                              <TD>
+                                {isMapped ? (
+                                  <span className="text-xs text-slate-600">{productName(mapped[u.sellerSku])}</span>
+                                ) : (
+                                  <Select
+                                    value={picks[u.sellerSku] ?? ''}
+                                    onChange={(e) =>
+                                      setPicks((p) => ({ ...p, [u.sellerSku]: e.target.value }))
+                                    }
+                                    className="min-w-[220px]"
+                                  >
+                                    <option value="">— choose product —</option>
+                                    {products.map((p) => (
+                                      <option key={p.id} value={p.id}>
+                                        {p.name} ({p.sku})
+                                      </option>
+                                    ))}
+                                  </Select>
+                                )}
+                                {mapError[u.sellerSku] && (
+                                  <p className="mt-1 text-xs text-rose-600">{mapError[u.sellerSku]}</p>
+                                )}
+                              </TD>
+                              <TD align="right">
+                                {isMapped ? (
+                                  <Badge tone="green">Mapped</Badge>
+                                ) : (
+                                  <div className="flex items-center justify-end gap-2">
+                                    <Link
+                                      href="/products"
+                                      target="_blank"
+                                      className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600"
+                                      title="Product not in the list? Create it, then reopen this preview."
+                                    >
+                                      <ExternalLink className="h-3.5 w-3.5" /> Products
+                                    </Link>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => saveMapping(u.sellerSku)}
+                                      disabled={savingSku === u.sellerSku || !picks[u.sellerSku]}
+                                    >
+                                      {savingSku === u.sellerSku ? 'Saving…' : 'Save'}
+                                    </Button>
+                                  </div>
+                                )}
+                              </TD>
+                            </TRow>
+                          );
+                        })}
+                      </tbody>
+                    </Table>
+                  )}
+                  {Object.keys(mapped).length > 0 && (
+                    <p className="px-4 py-3 text-xs text-emerald-600">
+                      {Object.keys(mapped).length} SKU(s) mapped and saved. Re-run the dry-run (or the
+                      next import) to post stock/COGS/P&L for them.
+                    </p>
+                  )}
+                </CardBody>
+              </Card>
+            );
+          })()}
 
           {/* --- stock impact (unavailable until mapped) --- */}
           <Card className="mb-4">
