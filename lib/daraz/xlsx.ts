@@ -7,9 +7,13 @@
 import ExcelJS from 'exceljs';
 
 // --- upload limits -----------------------------------------------------------
+// Sized for the real exports (Orders ~320 KB, Income ~810 KB, combined ~1.13 MB)
+// and kept WELL under the Vercel/Next.js request-body ceiling (~4.5 MB). We do
+// not claim more than the platform can actually accept.
 export const LIMITS = {
-  ordersMaxBytes: 25 * 1024 * 1024, // 25 MB
-  incomeMaxBytes: 15 * 1024 * 1024, // 15 MB
+  ordersMaxBytes: 3 * 1024 * 1024, // 3 MB
+  incomeMaxBytes: 3 * 1024 * 1024, // 3 MB
+  combinedMaxBytes: 4 * 1024 * 1024, // 4 MB total request guard (Vercel-safe)
   maxRows: 50_000, // orders sheet hard row cap
   maxColumns: 200, // header-count sanity cap
 } as const;
@@ -54,12 +58,12 @@ export function validateUpload(
     if (!XLSX_EXT.test(file.name)) throw new UploadError('Orders file must be a .xlsx workbook.');
     if (!XLSX_MIME.has(file.type)) throw new UploadError('Unexpected Orders file type.');
     if (file.size > LIMITS.ordersMaxBytes)
-      throw new UploadError('Orders file is too large (max 25 MB).');
+      throw new UploadError('Orders file is too large (max 3 MB).');
   } else {
     if (!CSV_EXT.test(file.name)) throw new UploadError('Income file must be a .csv export.');
     if (!CSV_MIME.has(file.type)) throw new UploadError('Unexpected Income file type.');
     if (file.size > LIMITS.incomeMaxBytes)
-      throw new UploadError('Income file is too large (max 15 MB).');
+      throw new UploadError('Income file is too large (max 3 MB).');
   }
 }
 

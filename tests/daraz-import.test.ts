@@ -15,10 +15,12 @@ import {
 } from '../lib/daraz/parse';
 import {
   computeDryRun,
+  dupKey,
   type LedgerProduct,
   type StockImpact,
   type DryRunResult,
 } from '../lib/daraz/dryrun';
+import { summariseStatements } from '../lib/daraz/statements';
 import { batchFingerprint, sha256Hex } from '../lib/daraz/fingerprint';
 import { maskPhone, maskNationalId, maskEmail, maskCustomer } from '../lib/daraz/mask';
 import { encryptPii, decryptPii, blindIndex } from '../lib/daraz/crypto';
@@ -256,8 +258,8 @@ test('sku mapping: resolved when mapping exists, blocked when missing (never gue
   );
 });
 
-test('duplicates: already-imported orderItemId flagged and excluded from importable', () => {
-  const r = dryRun({ alreadyImported: new Set(['OI-1']) });
+test('duplicates: already-imported (orderItemId, statementNumber) flagged, excluded from importable', () => {
+  const r = dryRun({ alreadyImported: new Set([dupKey('OI-1', 'ST-1')]) });
   assert.equal(r.totals.duplicates, 1);
   assert.equal(r.lines.find((l) => l.orderItemId === 'OI-1')!.isDuplicate, true);
   // OI-1 delivered+resolved but duplicate → not importable; OI-2 returned+resolved
@@ -501,4 +503,89 @@ test('crypto: blind index is deterministic, normalised, one-way and non-plaintex
   assert.ok(!h1.includes('03001234852')); // reveals no plaintext
   assert.notEqual(blindIndex('03001234852'), blindIndex('03009999999'));
   assert.equal(blindIndex(null), null);
+});
+
+// ===========================================================================
+// 12. Composite statement identity — one Order Item ID in two statements
+// ===========================================================================
+
+// A single fee row with an explicit statement number.
+function stmtRow(stmt: string, fee: string, amt: number, oiid = 'OI-9', sku = 'SKU-A') {
+  return `01 Jul 2026 - 07 Jul 2026;${stmt};05 Jul 2026;${fee};${amt};0;Ready to Release;;01 Jul 2026;ORD-9;${oiid};${sku};LZ;0;NO;Returned;Prod ${sku};SC`;
+}
+const TWO_STMT_CSV = [
+  'banner',
+  '""',
+  HDR,
+  stmtRow('026', 'Product Price Paid by Buyer', 100),
+  stmtRow('027', 'Product Price Refunded to Buyer', -100),
+].join('\n');
+
+test('composite identity: one Order Item ID across two statements yields two distinct lines', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(TWO_STMT_CSV));
+  assert.equal(lines.length, 2); // two statement-specific lines, NOT merged
+  assert.deepEqual(lines.map((l) => l.statementNumber).sort(), ['026', '027']);
+  assert.ok(lines.every((l) => l.orderItemId === 'OI-9'));
+
+  const orders = normaliseOrderRows([
+    { orderItemId: 'OI-9', orderNumber: 'ORD-9', sellerSku: 'SKU-A', status: 'returned' },
+  ]);
+  const r = computeDryRun({
+    incomeLines: lines,
+    orders,
+    skuMappings: [],
+    products: [],
+    alreadyImported: new Set(),
+    batchAlreadyImported: false,
+  });
+  assert.equal(r.totals.incomeLines, 2); // statement-specific combinations
+  assert.equal(r.totals.distinctOrderItemIds, 1); // one physical order item
+  assert.equal(r.totals.statementCount, 2);
+  assert.equal(r.totals.matched, 1); // matched at the order-item level
+  assert.equal(r.totals.unmatched, 0);
+  assert.equal(r.totals.darazNet, 0); // 100 + (-100)
+});
+
+test('composite identity: duplicate detection is per (orderItemId, statementNumber)', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(TWO_STMT_CSV));
+  const orders = normaliseOrderRows([
+    { orderItemId: 'OI-9', orderNumber: 'ORD-9', sellerSku: 'SKU-A', status: 'returned' },
+  ]);
+  const r = computeDryRun({
+    incomeLines: lines,
+    orders,
+    skuMappings: [],
+    products: [],
+    alreadyImported: new Set([dupKey('OI-9', '026')]), // only the 026 line seen before
+    batchAlreadyImported: false,
+  });
+  assert.equal(r.totals.duplicates, 1);
+  assert.equal(r.lines.find((l) => l.statementNumber === '026')!.isDuplicate, true);
+  assert.equal(r.lines.find((l) => l.statementNumber === '027')!.isDuplicate, false);
+});
+
+test('statements: summariseStatements rolls up every fee category per statement', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(CSV)); // OI-1 + OI-2, both statement ST-1
+  const s = summariseStatements(
+    lines.map((l) => ({
+      statementNumber: l.statementNumber,
+      statementPeriod: l.statementPeriod,
+      releaseStatus: l.releaseStatus,
+      transactionDate: l.transactionDates[0] ?? null,
+      orderItemId: l.orderItemId,
+      productPriceRevenue: l.productPriceRevenue,
+      buyerShippingCredit: l.buyerShippingCredit,
+      totalCredits: l.totalCredits,
+      totalDeductions: l.totalDeductions,
+      netAmount: l.netAmount,
+      fees: l.fees.map((f) => ({ category: f.category, amount: f.amount })),
+    }))
+  );
+  assert.equal(s.length, 1); // both order items settled in ST-1
+  assert.equal(s[0].orderItemCount, 2);
+  assert.equal(s[0].lineCount, 2);
+  assert.equal(s[0].netPayout, 265.12);
+  assert.equal(s[0].commission, -30);
+  assert.equal(s[0].refunds, -300);
+  assert.equal(s[0].reversals, 5);
 });

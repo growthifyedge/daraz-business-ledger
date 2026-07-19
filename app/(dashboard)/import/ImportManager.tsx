@@ -1,9 +1,8 @@
 'use client';
 
-import { useActionState, useState } from 'react';
-import { UploadCloud, AlertTriangle, Lock, CheckCircle2 } from 'lucide-react';
-import { previewImport, type PreviewState } from './actions';
-import { Button, SubmitButton } from '@/components/Button';
+import { useState, useTransition } from 'react';
+import { UploadCloud, AlertTriangle, Lock, CheckCircle2, ShieldCheck, Database } from 'lucide-react';
+import { Button } from '@/components/Button';
 import {
   Card,
   CardBody,
@@ -11,7 +10,6 @@ import {
   StatCard,
   Field,
   Input,
-  Select,
   Table,
   THead,
   TH,
@@ -22,22 +20,105 @@ import {
 } from '@/components/ui';
 import { formatMoney, formatNumber } from '@/lib/utils';
 import { ALL_FEE_CATEGORIES, FEE_CATEGORY_LABEL } from '@/lib/daraz/fees';
-import { MAPPING_UNAVAILABLE as UNAVAILABLE, type Unavailable } from '@/lib/daraz/dryrun';
+import {
+  MAPPING_UNAVAILABLE as UNAVAILABLE,
+  type DryRunResult,
+  type Unavailable,
+} from '@/lib/daraz/dryrun';
 
-interface Opt {
-  id: string;
-  name: string;
-  sku: string;
+interface PreviewMeta {
+  ordersFileName: string;
+  incomeFileName: string;
+  fingerprint: string;
+  ordersRows: number;
+  incomeFeeRows: number;
+  alreadyCommitted: boolean;
 }
 
-const initial: PreviewState = {};
+interface CommitSummary {
+  batchId: string;
+  orderItems: number;
+  customers: number;
+  incomeLines: number;
+  fees: number;
+  distinctOrderItemIds: number;
+  statementCount: number;
+  netPayout: number;
+  reconDiff: number;
+}
 
-export function ImportManager({ products }: { products: Opt[] }) {
-  const [state, action] = useActionState(previewImport, initial);
-  // In-session SKU→product picks (dry-run only; not persisted in this build).
-  const [picks, setPicks] = useState<Record<string, string>>({});
+export function ImportManager({
+  piiKeyReady,
+  hasCommittedImport,
+}: {
+  piiKeyReady: boolean;
+  hasCommittedImport: boolean;
+}) {
+  const [files, setFiles] = useState<{ orders: File | null; income: File | null }>({
+    orders: null,
+    income: null,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ result: DryRunResult; meta: PreviewMeta } | null>(null);
+  const [committed, setCommitted] = useState<CommitSummary | 'already' | null>(null);
+  const [pending, startTransition] = useTransition();
+  const [committing, setCommitting] = useState(false);
 
-  const r = state.result;
+  const r = preview?.result;
+
+  function buildForm(): FormData | null {
+    if (!files.orders || !files.income) {
+      setError('Select both the Orders .xlsx and the Income .csv.');
+      return null;
+    }
+    const fd = new FormData();
+    fd.append('ordersFile', files.orders);
+    fd.append('incomeFile', files.income);
+    return fd;
+  }
+
+  function runPreview() {
+    setError(null);
+    setCommitted(null);
+    const fd = buildForm();
+    if (!fd) return;
+    startTransition(async () => {
+      try {
+        const res = await fetch('/api/daraz-import/preview', { method: 'POST', body: fd });
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          setPreview(null);
+          setError(json.error || 'Preview failed.');
+          return;
+        }
+        setPreview({ result: json.result, meta: json.meta });
+      } catch {
+        setError('Network error while previewing.');
+      }
+    });
+  }
+
+  function runCommit() {
+    setError(null);
+    const fd = buildForm();
+    if (!fd) return;
+    setCommitting(true);
+    (async () => {
+      try {
+        const res = await fetch('/api/daraz-import/commit', { method: 'POST', body: fd });
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          setError(json.error || 'Import failed.');
+          return;
+        }
+        setCommitted(json.alreadyImported ? 'already' : json.summary);
+      } catch {
+        setError('Network error during import.');
+      } finally {
+        setCommitting(false);
+      }
+    })();
+  }
 
   return (
     <>
@@ -47,61 +128,108 @@ export function ImportManager({ products }: { products: Opt[] }) {
         </h1>
         <p className="mt-1 text-sm text-slate-500">
           Upload the <strong>All Orders</strong> Excel and the{' '}
-          <strong>Income Order Details</strong> CSV. This is a{' '}
-          <strong>dry-run preview only</strong> — nothing is written to the database.
+          <strong>Income Order Details</strong> CSV. Preview first; importing writes
+          statements, orders and encrypted customer data — but never posts stock, COGS or
+          P&amp;L until Seller SKUs are mapped.
         </p>
       </div>
 
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         <Lock className="mt-0.5 h-4 w-4 shrink-0" />
         <span>
-          Owner/Admin only. Uploaded customer, phone, national-ID, address and tracking
-          data are treated as confidential — masked in the app and never logged or
-          committed. <strong>Import is disabled in this build.</strong>
+          Owner only. Customer, phone, national-ID, address and tracking data are
+          encrypted at rest (AES-256-GCM) and masked in the app — never logged, never
+          committed, never in audit values.
         </span>
       </div>
 
+      {!piiKeyReady && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <strong>PII encryption key not configured.</strong> Customer import is disabled
+            until <code>DARAZ_PII_KEY</code> is set in the environment.
+          </span>
+        </div>
+      )}
+
       <Card className="mb-5">
         <CardBody>
-          <form action={action} className="flex flex-col gap-4">
-            {state.error && (
-              <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                {state.error}
-              </p>
+          <div className="flex flex-col gap-4">
+            {error && (
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>
             )}
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="All Orders export (.xlsx)" required>
-                <Input type="file" name="ordersFile" accept=".xlsx" required />
+              <Field label="All Orders export (.xlsx, ≤3 MB)" required>
+                <Input
+                  type="file"
+                  accept=".xlsx"
+                  onChange={(e) => setFiles((f) => ({ ...f, orders: e.target.files?.[0] ?? null }))}
+                />
               </Field>
-              <Field label="Income Order Details (.csv)" required>
-                <Input type="file" name="incomeFile" accept=".csv" required />
+              <Field label="Income Order Details (.csv, ≤3 MB)" required>
+                <Input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setFiles((f) => ({ ...f, income: e.target.files?.[0] ?? null }))}
+                />
               </Field>
             </div>
-            <div>
-              <SubmitButton>
-                <UploadCloud className="h-4 w-4" /> Run dry-run
-              </SubmitButton>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={runPreview} disabled={pending || committing}>
+                <UploadCloud className="h-4 w-4" /> {pending ? 'Previewing…' : 'Run dry-run'}
+              </Button>
             </div>
-          </form>
+          </div>
         </CardBody>
       </Card>
 
+      {committed && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          {committed === 'already' ? (
+            <span>These exact files were already imported — no duplicates created.</span>
+          ) : (
+            <span>
+              Imported <strong>{formatNumber(committed.orderItems)}</strong> orders,{' '}
+              <strong>{formatNumber(committed.incomeLines)}</strong> statement lines across{' '}
+              <strong>{committed.statementCount}</strong> statements. Net{' '}
+              <strong>{formatMoney(committed.netPayout)}</strong>. No stock/COGS/P&amp;L posted.
+            </span>
+          )}
+        </div>
+      )}
+
       {r && (
         <>
-          {r.batchAlreadyImported && (
+          {preview?.meta.alreadyCommitted && (
             <div className="mb-4 flex items-start gap-2 rounded-lg border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-700">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               This exact file pair was already imported (batch fingerprint match). Re-import
-              would be a no-op.
+              is a no-op.
             </div>
           )}
 
+          {/* --- what WILL and WON'T happen on import --- */}
+          <Card className="mb-4">
+            <CardHeader title="What import will do" subtitle="Financial and customer records import now; inventory waits for mapping." />
+            <CardBody className="grid gap-2 sm:grid-cols-3">
+              <PostureRow label="Financial statements imported" value="Yes" tone="ok" />
+              <PostureRow label="Orders / customers imported" value="Yes" tone="ok" />
+              <PostureRow
+                label="Inventory & P&L posted"
+                value={r.mappingComplete ? 'Yes' : 'No — waiting for product mapping'}
+                tone={r.mappingComplete ? 'ok' : 'wait'}
+              />
+            </CardBody>
+          </Card>
+
           {/* --- headline counts --- */}
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard label="Income lines" value={formatNumber(r.totals.incomeLines)} hint={`${formatNumber(r.totals.orderItems)} order-items in file`} />
-            <StatCard label="Matched" value={formatNumber(r.totals.matched)} tone="positive" hint={`${formatNumber(r.totals.unmatched)} unmatched`} />
-            <StatCard label="Unresolved SKUs" value={formatNumber(r.totals.unresolvedSkus)} tone={r.totals.unresolvedSkus ? 'warning' : 'positive'} hint={`${formatNumber(r.totals.resolvedSkus)} resolved`} />
-            <StatCard label="Duplicates" value={formatNumber(r.totals.duplicates)} tone={r.totals.duplicates ? 'warning' : 'default'} hint="already imported" />
+            <StatCard label="Statement lines" value={formatNumber(r.totals.incomeLines)} hint={`${formatNumber(r.totals.statementCount)} statements`} />
+            <StatCard label="Distinct order-item IDs" value={formatNumber(r.totals.distinctOrderItemIds)} hint={`${formatNumber(r.totals.orderItems)} order rows`} />
+            <StatCard label="Matched" value={`${formatNumber(r.totals.matched)} / ${formatNumber(r.totals.distinctOrderItemIds)}`} tone="positive" hint={`${formatNumber(r.totals.unmatched)} unmatched`} />
+            <StatCard label="Unresolved SKUs" value={formatNumber(r.totals.unresolvedSkus)} tone={r.totals.unresolvedSkus ? 'warning' : 'positive'} hint={`${formatNumber(r.totals.duplicates)} duplicates`} />
           </div>
 
           {/* --- reconciliation --- */}
@@ -109,16 +237,12 @@ export function ImportManager({ products }: { products: Opt[] }) {
             <CardHeader title="Reconciliation" subtitle="Calculated net must equal the Daraz-authoritative net." />
             <CardBody>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                <Mini label="Units" value={formatNumber(r.totals.units)} />
+                <Mini label="Distinct units" value={formatNumber(r.totals.units)} />
                 <Mini label="Total credits" value={formatMoney(r.totals.totalCredits)} />
                 <Mini label="Total deductions" value={formatMoney(r.totals.totalDeductions)} tone="neg" />
                 <Mini label="Calculated net" value={formatMoney(r.totals.calculatedNet)} />
                 <Mini label="Daraz net" value={formatMoney(r.totals.darazNet)} />
-                <Mini
-                  label="Difference"
-                  value={formatMoney(r.totals.reconDiff)}
-                  tone={r.totals.reconDiff === 0 ? 'ok' : 'neg'}
-                />
+                <Mini label="Difference" value={formatMoney(r.totals.reconDiff)} tone={r.totals.reconDiff === 0 ? 'ok' : 'neg'} />
               </div>
               {r.totals.reconDiff === 0 ? (
                 <p className="mt-3 flex items-center gap-1.5 text-sm text-emerald-600">
@@ -126,17 +250,17 @@ export function ImportManager({ products }: { products: Opt[] }) {
                 </p>
               ) : (
                 <p className="mt-3 text-sm text-rose-600">
-                  Reconciliation difference detected — do not import until resolved.
+                  Reconciliation difference detected — import will roll back until resolved.
                 </p>
               )}
             </CardBody>
           </Card>
 
-          {/* --- fee categories (every category, credit/deduction/net) --- */}
+          {/* --- fee categories --- */}
           <Card className="mb-4">
             <CardHeader
               title="Fee categories — full reconciliation"
-              subtitle="Every credit, deduction, VAT and tax category shown with its gross credit, gross deduction and net. Nothing is bucketed away."
+              subtitle="Every credit, deduction, VAT and tax category with its gross credit, gross deduction and net."
             />
             <CardBody className="p-0">
               <Table>
@@ -158,12 +282,8 @@ export function ImportManager({ products }: { products: Opt[] }) {
                       <TRow key={c}>
                         <TD className="font-medium">{FEE_CATEGORY_LABEL[c]}</TD>
                         <TD align="right">{credit ? formatMoney(credit) : '—'}</TD>
-                        <TD align="right" className="text-rose-600">
-                          {deduct ? formatMoney(deduct) : '—'}
-                        </TD>
-                        <TD align="right" className={net < 0 ? 'text-rose-600' : ''}>
-                          {formatMoney(net)}
-                        </TD>
+                        <TD align="right" className="text-rose-600">{deduct ? formatMoney(deduct) : '—'}</TD>
+                        <TD align="right" className={net < 0 ? 'text-rose-600' : ''}>{formatMoney(net)}</TD>
                       </TRow>
                     );
                   })}
@@ -179,11 +299,7 @@ export function ImportManager({ products }: { products: Opt[] }) {
               </Table>
               <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-slate-500">
                 <span>VAT included in amounts (informational): {formatMoney(r.totals.vatTotal)}</span>
-                <span
-                  className={
-                    r.totals.categorySumCheck === 0 ? 'text-emerald-600' : 'text-rose-600'
-                  }
-                >
+                <span className={r.totals.categorySumCheck === 0 ? 'text-emerald-600' : 'text-rose-600'}>
                   Σ category net − Daraz net = {formatMoney(r.totals.categorySumCheck)}
                   {r.totals.categorySumCheck === 0 ? ' ✓ no unexplained balance' : ' — mismatch'}
                 </span>
@@ -191,11 +307,11 @@ export function ImportManager({ products }: { products: Opt[] }) {
             </CardBody>
           </Card>
 
-          {/* --- unresolved SKU mapping --- */}
+          {/* --- unresolved SKUs (informational; import does NOT wait) --- */}
           <Card className="mb-4">
             <CardHeader
               title={`Unresolved Seller SKUs (${r.unresolvedSkuList.length})`}
-              subtitle="Map each Seller SKU to a ledger Product. Never guessed from names. Persisted on import (disabled here)."
+              subtitle="Statements, orders and customers import now with productId = null. Map each SKU (Products → mapping) to later post stock/COGS/P&L."
             />
             <CardBody className="p-0">
               {r.unresolvedSkuList.length === 0 ? (
@@ -206,29 +322,15 @@ export function ImportManager({ products }: { products: Opt[] }) {
                     <TRow>
                       <TH>Seller SKU</TH>
                       <TH>Daraz product</TH>
-                      <TH align="center">Lines</TH>
-                      <TH>Map to ledger product</TH>
+                      <TH align="center">Units</TH>
                     </TRow>
                   </THead>
                   <tbody>
                     {r.unresolvedSkuList.map((u) => (
                       <TRow key={u.sellerSku}>
                         <TD className="font-mono text-xs">{u.sellerSku || '—'}</TD>
-                        <TD className="max-w-[260px] truncate text-slate-500">{u.productName}</TD>
-                        <TD align="center">{u.lines}</TD>
-                        <TD>
-                          <Select
-                            value={picks[u.sellerSku] ?? ''}
-                            onChange={(e) => setPicks((p) => ({ ...p, [u.sellerSku]: e.target.value }))}
-                          >
-                            <option value="">— leave blocked —</option>
-                            {products.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name} ({p.sku})
-                              </option>
-                            ))}
-                          </Select>
-                        </TD>
+                        <TD className="max-w-[320px] truncate text-slate-500">{u.productName}</TD>
+                        <TD align="center">{u.units}</TD>
                       </TRow>
                     ))}
                   </tbody>
@@ -237,24 +339,21 @@ export function ImportManager({ products }: { products: Opt[] }) {
             </CardBody>
           </Card>
 
-          {/* --- stock impact --- */}
+          {/* --- stock impact (unavailable until mapped) --- */}
           <Card className="mb-4">
-            <CardHeader
-              title="Projected stock impact"
-              subtitle="Delivered, resolved units deduct sellable stock. Returned units are handled by the Returns module."
-            />
+            <CardHeader title="Projected stock impact" subtitle="Delivered, mapped units deduct sellable stock. Not posted by this import." />
             <CardBody className="p-0">
               {!r.stockProjectionAvailable || !Array.isArray(r.stockImpact) ? (
                 <div className="flex items-start gap-2 p-5 text-sm text-amber-700">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>
                     <strong>{UNAVAILABLE}.</strong> {formatNumber(r.totals.unresolvedSkus)} Seller
-                    SKU(s) are unmapped, so stock impact cannot be determined and no
-                    negative-stock check can be run. Map every SKU above first.
+                    SKU(s) are unmapped — stock/COGS/profit cannot be determined and none will be
+                    posted.
                   </span>
                 </div>
               ) : r.stockImpact.length === 0 ? (
-                <div className="p-5 text-sm text-slate-500">No resolved delivered units to deduct.</div>
+                <div className="p-5 text-sm text-slate-500">No mapped delivered units to deduct.</div>
               ) : (
                 <Table>
                   <THead>
@@ -274,7 +373,7 @@ export function ImportManager({ products }: { products: Opt[] }) {
                         <TD align="right">−{s.unitsOut}</TD>
                         <TD align="right" className={s.negativeBlocker ? 'font-semibold text-rose-600' : ''}>{s.projectedStock}</TD>
                         <TD align="center">
-                          {s.negativeBlocker ? <Badge tone="red">Negative — blocked</Badge> : <Badge tone="green">OK</Badge>}
+                          {s.negativeBlocker ? <Badge tone="red">Negative</Badge> : <Badge tone="green">OK</Badge>}
                         </TD>
                       </TRow>
                     ))}
@@ -292,28 +391,26 @@ export function ImportManager({ products }: { products: Opt[] }) {
             <StatCard label="Net payout (Daraz)" value={formatMoney(r.totals.darazNet)} />
           </div>
 
-          {Array.isArray(r.negativeStockBlockers) && r.negativeStockBlockers.length > 0 && (
-            <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              {r.negativeStockBlockers.length} product(s) would go negative on import — blocked until stock is corrected.
-            </div>
-          )}
-
-          {/* --- import (disabled) --- */}
+          {/* --- import action --- */}
           <Card>
             <CardBody className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-slate-600">
-                <strong>{formatNumber(r.totals.importable)}</strong> line(s) importable
-                (matched, SKU-resolved, not duplicate);{' '}
-                <strong>{formatNumber(r.totals.blocked)}</strong> blocked.
-                {!r.mappingComplete && (
-                  <span className="text-amber-700">
-                    {' '}All lines remain blocked until every Seller SKU is mapped.
-                  </span>
-                )}
+                Imports <strong>{formatNumber(r.totals.distinctOrderItemIds)}</strong> orders +{' '}
+                <strong>{formatNumber(r.totals.incomeLines)}</strong> statement lines. Re-uploading
+                identical files is a safe no-op.
               </div>
-              <Button disabled title="Import is disabled in this build">
-                <Lock className="h-4 w-4" /> Import (disabled)
+              <Button
+                onClick={runCommit}
+                disabled={
+                  committing ||
+                  !piiKeyReady ||
+                  r.totals.reconDiff !== 0 ||
+                  r.totals.unmatched > 0 ||
+                  preview?.meta.alreadyCommitted
+                }
+                title={!piiKeyReady ? 'PII key not configured' : 'Import statements + orders + customers'}
+              >
+                <Database className="h-4 w-4" /> {committing ? 'Importing…' : 'Import statements + orders'}
               </Button>
             </CardBody>
           </Card>
@@ -324,10 +421,23 @@ export function ImportManager({ products }: { products: Opt[] }) {
         <EmptyState
           icon={<UploadCloud className="h-10 w-10" />}
           title="No preview yet"
-          message="Upload both files and run a dry-run to see the full matching, reconciliation, SKU mapping and stock/P&L projection."
+          message="Upload both files and run a dry-run to see matching, reconciliation, statement lines, SKU status and the stock/P&L posture."
         />
       )}
+
+      {hasCommittedImport && !committed && (
+        <p className="mt-4 text-xs text-slate-400">A prior import exists. Re-uploading the same files will not duplicate.</p>
+      )}
     </>
+  );
+}
+
+function PostureRow({ label, value, tone }: { label: string; value: string; tone: 'ok' | 'wait' }) {
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${tone === 'ok' ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+      <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className={`text-sm font-semibold ${tone === 'ok' ? 'text-emerald-700' : 'text-amber-700'}`}>{value}</p>
+    </div>
   );
 }
 
@@ -358,11 +468,7 @@ function Mini({ label, value, tone }: { label: string; value: string; tone?: 'ok
   return (
     <div className="rounded-lg bg-slate-50 px-3 py-2">
       <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p
-        className={`text-sm font-semibold tabular-nums ${
-          tone === 'ok' ? 'text-emerald-600' : tone === 'neg' ? 'text-rose-600' : 'text-slate-800'
-        }`}
-      >
+      <p className={`text-sm font-semibold tabular-nums ${tone === 'ok' ? 'text-emerald-600' : tone === 'neg' ? 'text-rose-600' : 'text-slate-800'}`}>
         {value}
       </p>
     </div>

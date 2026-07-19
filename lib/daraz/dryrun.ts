@@ -30,6 +30,7 @@ export interface DryRunInput {
 
 export interface PreviewLine {
   orderItemId: string;
+  statementNumber: string;
   orderNumber: string;
   sellerSku: string;
   productName: string;
@@ -69,9 +70,11 @@ export interface DryRunResult {
   batchAlreadyImported: boolean;
   mappingComplete: boolean; // false while ANY Seller SKU is unresolved
   totals: {
-    incomeLines: number;
+    incomeLines: number; // statement-specific lines (combinations)
+    distinctOrderItemIds: number; // distinct income Order Item IDs
+    statementCount: number; // distinct statement numbers
     orderItems: number;
-    matched: number;
+    matched: number; // distinct income Order Item IDs with a matching order
     unmatched: number;
     duplicates: number;
     importable: number;
@@ -110,6 +113,11 @@ function emptyCatMap(): Record<FeeCategory, number> {
   return m;
 }
 
+/** Composite idempotency key for a statement line. */
+export function dupKey(orderItemId: string, statementNumber: string): string {
+  return `${orderItemId} ${statementNumber}`;
+}
+
 export function computeDryRun(input: DryRunInput): DryRunResult {
   const orderById = new Map(input.orders.map((o) => [o.orderItemId, o]));
   const skuToProduct = new Map(input.skuMappings.map((m) => [m.sellerSku, m.productId]));
@@ -122,29 +130,38 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
   const resolvedSkus = new Set<string>();
   const unresolvedAgg = new Map<string, { productName: string; lines: number; units: number }>();
   const deliveredUnitsByProduct = new Map<string, number>();
+  // Physical stock deducts ONCE per order item even if it settles across two
+  // statements — track which order items were already counted for stock.
+  const countedForStock = new Set<string>();
+  // Distinct income Order Item IDs and their match state (matching is at the
+  // order-item level, not the statement-line level).
+  const distinctOrderIds = new Set<string>();
+  const matchedOrderIds = new Set<string>();
+  const statementNumbers = new Set<string>();
 
-  let matched = 0,
-    duplicates = 0,
+  let duplicates = 0,
     productRevenue = 0,
     buyerShippingCredit = 0,
     totalCredits = 0,
     totalDeductions = 0,
     calculatedNet = 0,
     darazNet = 0,
-    vatTotal = 0,
-    units = 0;
+    vatTotal = 0;
 
   for (const il of input.incomeLines) {
     const order = orderById.get(il.orderItemId);
     const isMatched = !!order;
-    if (isMatched) matched++;
+    distinctOrderIds.add(il.orderItemId);
+    if (isMatched) matchedOrderIds.add(il.orderItemId);
+    if (il.statementNumber) statementNumbers.add(il.statementNumber);
 
     const sku = il.sellerSku || order?.sellerSku || '';
     const resolvedProductId = sku ? (skuToProduct.get(sku) ?? null) : null;
     const skuResolved = resolvedProductId !== null;
     if (skuResolved) resolvedSkus.add(sku);
 
-    const isDuplicate = input.alreadyImported.has(il.orderItemId);
+    // Idempotency is per statement line: (orderItemId, statementNumber).
+    const isDuplicate = input.alreadyImported.has(dupKey(il.orderItemId, il.statementNumber));
     if (isDuplicate) duplicates++;
 
     const feesByCategory = sumByCategory(il.fees);
@@ -160,7 +177,7 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
         units: 0,
       };
       agg.lines++;
-      agg.units += 1;
+      if (!countedForStock.has(il.orderItemId)) agg.units += 1;
       unresolvedAgg.set(sku, agg);
     }
 
@@ -177,10 +194,16 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
     totalDeductions = round2(totalDeductions + il.totalDeductions);
     calculatedNet = round2(calculatedNet + calcNet);
     darazNet = round2(darazNet + il.netAmount);
-    units += 1;
 
     const status = (il.orderStatus || order?.status || '').toLowerCase();
-    if (skuResolved && resolvedProductId && !isDuplicate && status.includes('deliver')) {
+    if (
+      skuResolved &&
+      resolvedProductId &&
+      !isDuplicate &&
+      status.includes('deliver') &&
+      !countedForStock.has(il.orderItemId)
+    ) {
+      countedForStock.add(il.orderItemId);
       deliveredUnitsByProduct.set(
         resolvedProductId,
         (deliveredUnitsByProduct.get(resolvedProductId) ?? 0) + 1
@@ -189,6 +212,7 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
 
     lines.push({
       orderItemId: il.orderItemId,
+      statementNumber: il.statementNumber,
       orderNumber: il.orderNumber || order?.orderNumber || '',
       sellerSku: sku,
       productName: il.productName || order?.itemName || '',
@@ -210,6 +234,10 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
       isDuplicate,
     });
   }
+
+  const distinctOrderItemIds = distinctOrderIds.size;
+  const matched = matchedOrderIds.size;
+  const units = distinctOrderItemIds; // one physical unit per distinct order item
 
   const unresolvedSkuList = [...unresolvedAgg.entries()]
     .map(([sellerSku, v]) => ({ sellerSku, ...v }))
@@ -263,9 +291,11 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
     mappingComplete,
     totals: {
       incomeLines: input.incomeLines.length,
+      distinctOrderItemIds,
+      statementCount: statementNumbers.size,
       orderItems: input.orders.length,
       matched,
-      unmatched: input.incomeLines.length - matched,
+      unmatched: distinctOrderItemIds - matched,
       duplicates,
       importable,
       blocked: lines.filter((l) => l.blocked).length,

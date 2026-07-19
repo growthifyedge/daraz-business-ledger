@@ -59,6 +59,7 @@ enum AuditAction {
   DELETE
   LOGIN
   RESTORE
+  VIEW // e.g. an authorised reveal of masked customer PII (value never stored)
 }
 
 enum CashParty {
@@ -494,17 +495,22 @@ model DarazImportBatch {
   ordersFileHash   String
   incomeFileName   String
   incomeFileHash   String
-  status           DarazImportStatus @default(DRY_RUN)
-  totalOrderItems  Int               @default(0)
-  totalIncomeLines Int               @default(0)
-  matchedLines     Int               @default(0)
-  unmatchedLines   Int               @default(0)
-  duplicateLines   Int               @default(0)
-  unresolvedSkus   Int               @default(0)
-  reconDiff        Float             @default(0)
-  createdById      String?
-  createdBy        String?
-  createdAt        DateTime          @default(now())
+  status               DarazImportStatus @default(DRY_RUN)
+  totalOrderItems      Int               @default(0)
+  totalIncomeLines     Int               @default(0) // statement-specific lines (219)
+  distinctOrderItemIds Int               @default(0) // distinct income Order Item IDs (215)
+  matchedLines         Int               @default(0)
+  unmatchedLines       Int               @default(0)
+  duplicateLines       Int               @default(0)
+  unresolvedSkus       Int               @default(0)
+  statementCount       Int               @default(0)
+  totalCredits         Float             @default(0)
+  totalDeductions      Float             @default(0)
+  netPayout            Float             @default(0)
+  reconDiff            Float             @default(0)
+  createdById          String?
+  createdBy            String?
+  createdAt            DateTime          @default(now())
 
   orderItems  DarazOrderItem[]
   incomeLines DarazIncomeLine[]
@@ -573,11 +579,13 @@ model DarazOrderItem {
 
   customerId    String?
   customer      DarazCustomer?    @relation(fields: [customerId], references: [id])
-  productId     String? // resolved ledger Product (via DarazSkuMapping)
+  productId     String? // resolved ledger Product (via DarazSkuMapping); null until mapped
   product       Product?          @relation(fields: [productId], references: [id])
   importBatchId String?
   importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
-  incomeLine    DarazIncomeLine?
+  // One order item can appear in MORE THAN ONE weekly statement (e.g. a returned
+  // item settled across two statements), so this is one-to-many, not one-to-one.
+  incomeLines   DarazIncomeLine[]
 
   createdAt DateTime @default(now())
 
@@ -587,34 +595,38 @@ model DarazOrderItem {
   @@index([productId])
 }
 
-/// One income line per orderItemId (aggregated from the long fee format).
-/// Daraz income is authoritative for revenue/fees/refunds/reversals.
+/// One income line per (orderItemId, statementNumber) — a statement-specific
+/// settlement line. The SAME Order Item ID can appear in two different weekly
+/// statements (four such cases in the verified data), so identity is COMPOSITE:
+/// (orderItemId, statementNumber). Daraz income is authoritative for
+/// revenue/fees/refunds/reversals. Fees hang off the correct statement line.
 model DarazIncomeLine {
-  id                  String    @id @default(cuid())
-  orderItemId         String    @unique // join key + idempotency
+  id                  String   @id @default(cuid())
+  orderItemId         String // join key to DarazOrderItem.orderItemId
+  statementNumber     String // part of the composite identity — always present
   orderNumber         String?
   sellerSku           String?
   productName         String?
-  statementNumber     String?
   statementPeriod     String?
   transactionDate     DateTime?
   orderCreationDate   DateTime?
   orderStatus         String?
   releaseStatus       String?
-  productPriceRevenue Float     @default(0)
-  buyerShippingCredit Float     @default(0)
-  totalCredits        Float     @default(0)
-  totalDeductions     Float     @default(0)
-  netAmount           Float     @default(0) // Daraz-authoritative net
-  reconciled          Boolean   @default(false)
+  productPriceRevenue Float    @default(0)
+  buyerShippingCredit Float    @default(0)
+  totalCredits        Float    @default(0)
+  totalDeductions     Float    @default(0)
+  netAmount           Float    @default(0) // Daraz-authoritative net for this statement line
+  reconciled          Boolean  @default(false)
 
-  orderItem     DarazOrderItem?   @relation(fields: [orderItemId], references: [orderItemId])
+  orderItem     DarazOrderItem    @relation(fields: [orderItemId], references: [orderItemId])
   importBatchId String?
   importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
   fees          DarazIncomeFee[]
 
   createdAt DateTime @default(now())
 
+  @@unique([orderItemId, statementNumber]) // composite identity + idempotency
   @@index([orderNumber])
   @@index([statementNumber])
   @@index([sellerSku])
