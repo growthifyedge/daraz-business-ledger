@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useState } from 'react';
 import { Plus, Pencil, ShoppingCart, FileText } from 'lucide-react';
 import { savePurchase, deletePurchase } from './actions';
+import { BulkPurchaseUpload } from './BulkPurchaseUpload';
 import { initialFormState } from '@/lib/formState';
 import { Button, SubmitButton } from '@/components/Button';
 import { Modal } from '@/components/Modal';
@@ -126,6 +127,7 @@ export function PurchasesManager({
             ]}
             rows={exportRows}
           />
+          <BulkPurchaseUpload />
           <Button onClick={openNew}>
             <Plus className="h-4 w-4" /> New Purchase
           </Button>
