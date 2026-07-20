@@ -1,14 +1,18 @@
 'use client';
 
-import { useActionState, useRef, useState } from 'react';
-import { Upload, Download, X, FileText } from 'lucide-react';
-import { Button, SubmitButton } from '@/components/Button';
+import { useRef, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import { Upload, Download, X, FileText, Database, CheckCircle2 } from 'lucide-react';
+import { Button } from '@/components/Button';
 import { Card, CardBody, StatCard, Badge, Table, THead, TH, TD, TRow } from '@/components/ui';
 import { formatMoney } from '@/lib/utils';
-import { previewBulkPurchases, type BulkPreviewState } from './bulkActions';
+import {
+  previewBulkPurchases,
+  commitBulkPurchases,
+  type BulkPreviewState,
+  type BulkCommitState,
+} from './bulkActions';
 import { bulkPurchaseTemplateCsv, type BulkRowStatus } from '@/lib/purchaseBulk';
-
-const initial: BulkPreviewState = {};
 
 const STATUS: Record<BulkRowStatus, { label: string; tone: 'green' | 'amber' | 'red' | 'slate' }> = {
   NEW: { label: 'New', tone: 'green' },
@@ -18,8 +22,88 @@ const STATUS: Record<BulkRowStatus, { label: string; tone: 'green' | 'amber' | '
 };
 
 export function BulkPurchaseUpload() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [state, action] = useActionState(previewBulkPurchases, initial);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<BulkPreviewState | null>(null);
+  const [importAnyway, setImportAnyway] = useState<Set<number>>(new Set());
+  const [result, setResult] = useState<BulkCommitState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [previewing, startPreview] = useTransition();
+  const [committing, setCommitting] = useState(false);
+
+  function reset() {
+    setPreview(null);
+    setImportAnyway(new Set());
+    setResult(null);
+    setError(null);
+  }
+  function close() {
+    setOpen(false);
+    setFile(null);
+    reset();
+  }
+
+  function runPreview() {
+    setError(null);
+    setResult(null);
+    setImportAnyway(new Set());
+    if (!file) {
+      setError('Choose a .csv or .xlsx file first.');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    startPreview(async () => {
+      const state = await previewBulkPurchases(fd);
+      if (state.error) {
+        setPreview(null);
+        setError(state.error);
+      } else setPreview(state);
+    });
+  }
+
+  function toggleAnyway(line: number) {
+    setImportAnyway((prev) => {
+      const next = new Set(prev);
+      if (next.has(line)) next.delete(line);
+      else next.add(line);
+      return next;
+    });
+  }
+
+  function runCommit() {
+    if (!file) return;
+    setError(null);
+    setCommitting(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('importAnyway', [...importAnyway].join(','));
+    (async () => {
+      try {
+        const res = await commitBulkPurchases(fd);
+        if (res.error) setError(res.error);
+        else {
+          setResult(res);
+          setPreview(null);
+          router.refresh(); // reflect new purchases in the table behind the modal
+        }
+      } catch {
+        setError('Network error during import.');
+      } finally {
+        setCommitting(false);
+      }
+    })();
+  }
+
+  const summary = preview?.summary;
+  const selectedPossibles = preview?.rows
+    ? preview.rows.filter((r) => r.status === 'POSSIBLE_DUPLICATE' && importAnyway.has(r.line)).length
+    : 0;
+  const importCount = (summary?.new ?? 0) + selectedPossibles;
+  // Show/enable whenever there is at least one importable row — NEW rows, or
+  // POSSIBLE_DUPLICATE rows explicitly ticked. Works even with zero NEW rows.
+  const showConfirm = !!summary && importCount > 0;
 
   return (
     <>
@@ -36,11 +120,12 @@ export function BulkPurchaseUpload() {
                   <div>
                     <h2 className="text-lg font-bold text-slate-900">Bulk Purchase Upload</h2>
                     <p className="mt-1 text-sm text-slate-500">
-                      Preview only — this validates and classifies your rows. Nothing is imported yet.
+                      Preview validates and classifies rows. Import writes NEW rows (and any possible
+                      duplicates you tick) as purchases marked <strong>reconciliation pending</strong>.
                     </p>
                   </div>
                   <button
-                    onClick={() => setOpen(false)}
+                    onClick={close}
                     className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
                     aria-label="Close"
                   >
@@ -56,42 +141,54 @@ export function BulkPurchaseUpload() {
                   >
                     <Download className="h-4 w-4" /> Download Excel template
                   </a>
-                  <form action={action} className="flex flex-wrap items-end gap-2">
-                    <label className="text-sm">
-                      <span className="mb-1 block font-medium text-slate-700">CSV or Excel file</span>
-                      <input
-                        type="file"
-                        name="file"
-                        accept=".csv,.xlsx"
-                        required
-                        className="block text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-slate-200"
-                      />
-                    </label>
-                    <SubmitButton>
-                      <FileText className="h-4 w-4" /> Preview
-                    </SubmitButton>
-                  </form>
+                  <label className="text-sm">
+                    <span className="mb-1 block font-medium text-slate-700">CSV or Excel file</span>
+                    <input
+                      type="file"
+                      accept=".csv,.xlsx"
+                      onChange={(e) => {
+                        setFile(e.target.files?.[0] ?? null);
+                        reset();
+                      }}
+                      className="block text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-slate-200"
+                    />
+                  </label>
+                  <Button onClick={runPreview} disabled={previewing || committing || !file}>
+                    <FileText className="h-4 w-4" /> {previewing ? 'Previewing…' : 'Preview'}
+                  </Button>
                 </div>
 
-                {state.error && (
-                  <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{state.error}</p>
+                {error && (
+                  <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>
                 )}
 
-                {state.summary && state.rows && (
+                {result && (
+                  <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      Imported <strong>{result.imported}</strong> purchase(s); skipped{' '}
+                      <strong>{result.skipped}</strong> (duplicates, errors, and un-ticked possible
+                      duplicates). All imported rows are marked reconciliation pending. Re-uploading the
+                      same sheet will import nothing.
+                    </span>
+                  </div>
+                )}
+
+                {summary && preview?.rows && (
                   <>
                     <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-                      <StatCard label="Rows" value={String(state.summary.total)} />
-                      <StatCard label="New" value={String(state.summary.new)} tone="positive" />
+                      <StatCard label="Rows" value={String(summary.total)} />
+                      <StatCard label="New" value={String(summary.new)} tone="positive" />
                       <StatCard
                         label="Possible duplicate"
-                        value={String(state.summary.possibleDuplicate)}
-                        tone={state.summary.possibleDuplicate ? 'warning' : 'default'}
+                        value={String(summary.possibleDuplicate)}
+                        tone={summary.possibleDuplicate ? 'warning' : 'default'}
                       />
-                      <StatCard label="Duplicate" value={String(state.summary.duplicate)} />
+                      <StatCard label="Duplicate" value={String(summary.duplicate)} />
                       <StatCard
                         label="Error"
-                        value={String(state.summary.error)}
-                        tone={state.summary.error ? 'negative' : 'default'}
+                        value={String(summary.error)}
+                        tone={summary.error ? 'negative' : 'default'}
                       />
                     </div>
 
@@ -101,6 +198,7 @@ export function BulkPurchaseUpload() {
                           <TRow>
                             <TH>#</TH>
                             <TH>Status</TH>
+                            <TH align="center">Import</TH>
                             <TH>Date</TH>
                             <TH>SKU → Product</TH>
                             <TH align="right">Qty</TH>
@@ -112,18 +210,32 @@ export function BulkPurchaseUpload() {
                           </TRow>
                         </THead>
                         <tbody>
-                          {state.rows.map((r) => (
+                          {preview.rows.map((r) => (
                             <TRow key={r.line}>
                               <TD className="text-xs text-slate-400">{r.line}</TD>
                               <TD>
                                 <Badge tone={STATUS[r.status].tone}>{STATUS[r.status].label}</Badge>
                               </TD>
+                              <TD align="center">
+                                {r.status === 'NEW' ? (
+                                  <span className="text-xs text-emerald-600">Yes</span>
+                                ) : r.status === 'POSSIBLE_DUPLICATE' ? (
+                                  <label className="inline-flex items-center gap-1 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={importAnyway.has(r.line)}
+                                      onChange={() => toggleAnyway(r.line)}
+                                    />
+                                    anyway
+                                  </label>
+                                ) : (
+                                  <span className="text-xs text-slate-300">—</span>
+                                )}
+                              </TD>
                               <TD className="text-xs">{r.parsed?.dateISO ?? (r.input.date || '—')}</TD>
                               <TD className="max-w-[220px] truncate text-xs">
                                 <span className="font-mono">{r.input.productSku || '—'}</span>
-                                {r.parsed && (
-                                  <span className="text-slate-500"> → {r.parsed.productName}</span>
-                                )}
+                                {r.parsed && <span className="text-slate-500"> → {r.parsed.productName}</span>}
                               </TD>
                               <TD align="right">{r.parsed?.quantity ?? r.input.quantity}</TD>
                               <TD align="right">{r.parsed ? formatMoney(r.parsed.unitCost) : r.input.unitCost}</TD>
@@ -139,10 +251,18 @@ export function BulkPurchaseUpload() {
                       </Table>
                     </div>
 
-                    <p className="mt-3 text-xs text-slate-400">
-                      Import is not enabled in this build — preview and validation only. No purchase,
-                      stock or payment records are created.
-                    </p>
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs text-slate-500">
+                        Only NEW rows and ticked possible-duplicates are imported. Errors and duplicates
+                        are never written. Imports are atomic — if any row fails, nothing is written.
+                      </p>
+                      {showConfirm && (
+                        <Button onClick={runCommit} disabled={committing || importCount === 0}>
+                          <Database className="h-4 w-4" />{' '}
+                          {committing ? 'Importing…' : `Confirm Import (${importCount})`}
+                        </Button>
+                      )}
+                    </div>
                   </>
                 )}
               </CardBody>
