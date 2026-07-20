@@ -123,11 +123,15 @@ export function parseCsv(text: string): string[][] {
 
 export class BulkParseError extends Error {}
 
-/** Parse CSV text into header-keyed raw rows. Throws BulkParseError on a bad header. */
-export function parseBulkPurchaseCsv(text: string): RawBulkRow[] {
-  const grid = parseCsv(text).filter((r) => r.some((c) => c.trim() !== ''));
+/**
+ * Map a raw cell grid (header row first) into header-keyed rows. Shared by the
+ * CSV and the Excel paths so both use IDENTICAL columns and validation. Column
+ * order is irrelevant — columns are matched by header name. Throws on a bad header.
+ */
+export function rowsFromGrid(rawGrid: string[][]): RawBulkRow[] {
+  const grid = rawGrid.filter((r) => r.some((c) => (c ?? '').trim() !== ''));
   if (grid.length === 0) throw new BulkParseError('The file is empty.');
-  const header = grid[0].map((h) => h.trim());
+  const header = grid[0].map((h) => (h ?? '').trim());
   const idx: Partial<Record<BulkHeader, number>> = {};
   for (const h of BULK_PURCHASE_HEADERS) {
     const at = header.findIndex((x) => x.toLowerCase() === h.toLowerCase());
@@ -152,6 +156,32 @@ export function parseBulkPurchaseCsv(text: string): RawBulkRow[] {
     });
   }
   return out;
+}
+
+/** Parse CSV text into header-keyed raw rows. Throws BulkParseError on a bad header. */
+export function parseBulkPurchaseCsv(text: string): RawBulkRow[] {
+  return rowsFromGrid(parseCsv(text));
+}
+
+/**
+ * Normalise a spreadsheet cell value to a trimmed string that the validators
+ * understand. Pure (operates on `unknown`) so it needs no Excel library and is
+ * unit-testable: Date → ISO, number → string (so a numeric SKU like 1008 still
+ * matches), rich-text/formula → their text/result.
+ */
+export function cellToString(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if (typeof o.text === 'string') return o.text;
+    if ('result' in o) return o.result == null ? '' : String(o.result);
+    if (Array.isArray(o.richText)) {
+      return (o.richText as Array<{ text?: string }>).map((t) => t.text ?? '').join('');
+    }
+    return '';
+  }
+  return String(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,10 +335,18 @@ export function classifyBulkPurchases(
 // Template
 // ---------------------------------------------------------------------------
 
+/** Example data row shared by the CSV and Excel templates so they stay in sync. */
+export const BULK_PURCHASE_EXAMPLE_ROW: string[] = [
+  '2026-07-18',
+  '1008',
+  '10',
+  '250',
+  'INV-1042',
+  'Ashu Traderz',
+  'Yahya',
+  'restock',
+];
+
 export function bulkPurchaseTemplateCsv(): string {
-  const header = BULK_PURCHASE_HEADERS.join(',');
-  const example = ['2026-07-18', '1008', '10', '250', 'INV-1042', 'Ashu Traderz', 'Yahya', 'restock'].join(
-    ','
-  );
-  return `${header}\n${example}\n`;
+  return `${BULK_PURCHASE_HEADERS.join(',')}\n${BULK_PURCHASE_EXAMPLE_ROW.join(',')}\n`;
 }
