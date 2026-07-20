@@ -23,6 +23,7 @@ enum Role {
 enum PaymentStatus {
   UNPAID
   PAID
+  RECONCILIATION_PENDING // paid in reality but amount/date not yet reconciled; NOT owed, NOT a settled payment, no cash-flow impact
 }
 
 enum StockMovementType {

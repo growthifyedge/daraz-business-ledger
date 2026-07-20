@@ -346,6 +346,9 @@ export interface CashFlow {
   settlementsReceived: number; // money from Daraz
   reimbursementsPaid: number; // paid to Yahya for purchases
   stockPurchaseUnpaid: number; // owed to Yahya (unpaid purchases)
+  // Purchases paid in reality but amount/date not yet reconciled. Shown for
+  // transparency only — NOT owed, NOT a settled payment, NO net-cash impact.
+  reconciliationPending: number;
   expensesPaid: number; // all logged expenses
   payoutsPaid: number; // profit-share payouts
   netCashBalance: number;
@@ -376,22 +379,29 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
     deletedAt: null,
     paymentStatus: 'UNPAID',
   };
+  const purchasePendingWhere: Prisma.PurchaseWhereInput = {
+    deletedAt: null,
+    paymentStatus: 'RECONCILIATION_PENDING',
+  };
   if (range) {
     purchasePaidWhere.date = range;
     purchaseUnpaidWhere.date = range;
+    purchasePendingWhere.date = range;
   }
   if (f.storeId) {
     purchasePaidWhere.storeId = f.storeId;
     purchaseUnpaidWhere.storeId = f.storeId;
+    purchasePendingWhere.storeId = f.storeId;
   }
 
-  const [inv, settle, exp, payout, paid, unpaid] = await Promise.all([
+  const [inv, settle, exp, payout, paid, unpaid, pending] = await Promise.all([
     prisma.investment.aggregate({ where: investmentWhere, _sum: { amount: true } }),
     prisma.settlement.aggregate({ where: settlementWhere, _sum: { netAmount: true } }),
     prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
     prisma.payout.aggregate({ where: payoutWhere, _sum: { amount: true } }),
     prisma.purchase.aggregate({ where: purchasePaidWhere, _sum: { totalCost: true } }),
     prisma.purchase.aggregate({ where: purchaseUnpaidWhere, _sum: { totalCost: true } }),
+    prisma.purchase.aggregate({ where: purchasePendingWhere, _sum: { totalCost: true } }),
   ]);
 
   const investment = inv._sum.amount ?? 0;
@@ -400,9 +410,13 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const payoutsPaid = payout._sum.amount ?? 0;
   const reimbursementsPaid = paid._sum.totalCost ?? 0;
   const stockPurchaseUnpaid = unpaid._sum.totalCost ?? 0;
+  // Reconciliation-pending purchases are deliberately excluded from every cash
+  // figure below — they are neither owed nor a settled payment.
+  const reconciliationPending = pending._sum.totalCost ?? 0;
 
   // Cash in hand = money in (investment + settlements) − money out
   // (reimbursements to Yahya + non-purchase expenses + profit payouts).
+  // reconciliationPending is intentionally NOT part of this.
   const netCashBalance =
     investment +
     settlementsReceived -
@@ -415,6 +429,7 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
     settlementsReceived,
     reimbursementsPaid,
     stockPurchaseUnpaid,
+    reconciliationPending,
     expensesPaid,
     payoutsPaid,
     netCashBalance,

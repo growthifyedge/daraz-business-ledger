@@ -22,7 +22,8 @@ export async function savePurchase(
   const unitCost = num(formData.get('unitCost'));
   const paymentStatus = (str(formData.get('paymentStatus')) ?? 'UNPAID') as
     | 'PAID'
-    | 'UNPAID';
+    | 'UNPAID'
+    | 'RECONCILIATION_PENDING';
   const reimbursementDate = str(formData.get('reimbursementDate'));
   const bankReference = str(formData.get('bankReference'));
   const invoiceUrl = str(formData.get('invoiceUrl'));
