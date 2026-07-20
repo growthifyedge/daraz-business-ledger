@@ -202,10 +202,11 @@ function round2(n: number): number {
 
 const SEP = '|';
 
-/** Duplicate key: reference is unique per product. Exported so the server action
- *  builds the SAME keys when scanning existing purchases. */
-export function refKeyOf(productId: string, reference: string): string {
-  return [productId, reference.trim().toLowerCase()].join(SEP);
+/** Strong duplicate key: a reference is unique per product PER STORE. The same
+ *  reference/SKU in a different store is NOT a duplicate. Exported so the server
+ *  action builds the SAME keys when scanning existing purchases. */
+export function refKeyOf(productId: string, reference: string, storeId: string | null): string {
+  return [productId, reference.trim().toLowerCase(), storeId ?? ''].join(SEP);
 }
 export function softKeyOf(
   productId: string,
@@ -297,7 +298,10 @@ export function classifyBulkPurchases(
 
     // ---- duplicate rules (in precedence order) ----
     let status: BulkRowStatus = 'NEW';
-    if (parsed.reference && ctx.existingRefKeys.has(refKeyOf(parsed.productId, parsed.reference))) {
+    if (
+      parsed.reference &&
+      ctx.existingRefKeys.has(refKeyOf(parsed.productId, parsed.reference, parsed.storeId))
+    ) {
       status = 'DUPLICATE';
       messages.push('Reference already recorded for this product.');
     } else {
@@ -329,6 +333,23 @@ export function classifyBulkPurchases(
     error: classified.filter((r) => r.status === 'ERROR').length,
   };
   return { rows: classified, summary };
+}
+
+/**
+ * The rows an import may write: NEW always; POSSIBLE_DUPLICATE only when its line
+ * is explicitly selected ("Import anyway"). ERROR and DUPLICATE are never
+ * importable. Pure — the commit path uses this so the server, not the client,
+ * decides what is written.
+ */
+export function selectImportableRows(
+  rows: ClassifiedBulkRow[],
+  importAnyway: ReadonlySet<number>
+): ClassifiedBulkRow[] {
+  return rows.filter(
+    (r) =>
+      !!r.parsed &&
+      (r.status === 'NEW' || (r.status === 'POSSIBLE_DUPLICATE' && importAnyway.has(r.line)))
+  );
 }
 
 // ---------------------------------------------------------------------------

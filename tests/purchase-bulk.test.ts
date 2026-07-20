@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   parseBulkPurchaseCsv,
   classifyBulkPurchases,
+  selectImportableRows,
   bulkPurchaseTemplateCsv,
   rowsFromGrid,
   cellToString,
@@ -13,6 +14,7 @@ import {
   softKeyOf,
   BULK_PURCHASE_HEADERS,
   type BulkContext,
+  type ClassifiedBulkRow,
   type RawBulkRow,
 } from '../lib/purchaseBulk';
 
@@ -100,14 +102,14 @@ test('classify: unknown SKU, bad qty/cost/date/store all → ERROR (never name-m
 // --- duplicate rule 1: reference + SKU ---
 
 test('rule 1: matching reference + product SKU → DUPLICATE', () => {
-  const c = ctx({ existingRefKeys: new Set([refKeyOf('p8', 'INV-1042')]) });
+  const c = ctx({ existingRefKeys: new Set([refKeyOf('p8', 'INV-1042', null)]) });
   const { rows } = classifyBulkPurchases([row({ reference: 'INV-1042' })], c);
   assert.equal(rows[0].status, 'DUPLICATE');
   assert.match(rows[0].messages.join(' '), /Reference already recorded/);
 });
 
 test('rule 1: same reference but different product is NOT a duplicate', () => {
-  const c = ctx({ existingRefKeys: new Set([refKeyOf('p8', 'INV-1042')]) });
+  const c = ctx({ existingRefKeys: new Set([refKeyOf('p8', 'INV-1042', null)]) });
   const { rows } = classifyBulkPurchases([row({ productSku: '1010', reference: 'INV-1042' })], c);
   assert.equal(rows[0].status, 'NEW');
 });
@@ -133,11 +135,41 @@ test('rule 3: same date+SKU+qty+unitCost as existing → POSSIBLE_DUPLICATE only
 
 test('rule precedence: reference duplicate wins over soft match', () => {
   const c = ctx({
-    existingRefKeys: new Set([refKeyOf('p8', 'INV-1042')]),
+    existingRefKeys: new Set([refKeyOf('p8', 'INV-1042', null)]),
     existingSoftKeys: new Set([softKeyOf('p8', '2026-07-18', 10, 250)]),
   });
   const { rows } = classifyBulkPurchases([row({ reference: 'INV-1042' })], c);
   assert.equal(rows[0].status, 'DUPLICATE');
+});
+
+// --- duplicate rule 1 is store-aware: reference + SKU + store ---
+
+test('refKeyOf: store is part of the strong key', () => {
+  assert.notEqual(refKeyOf('p8', 'INV-1042', 's1'), refKeyOf('p8', 'INV-1042', 's2'));
+  assert.notEqual(refKeyOf('p8', 'INV-1042', 's1'), refKeyOf('p8', 'INV-1042', null));
+  assert.equal(refKeyOf('p8', 'INV-1042', 's1'), refKeyOf('p8', 'INV-1042', 's1'));
+});
+
+test('rule 1 store-aware: same reference+SKU in a different store is NOT a duplicate', () => {
+  const c = ctx({
+    storeByName: new Map([
+      ['ashu traderz', { id: 's1', name: 'Ashu Traderz' }],
+      ['warehouse b', { id: 's2', name: 'Warehouse B' }],
+    ]),
+    existingRefKeys: new Set([refKeyOf('p8', 'INV-1042', 's1')]),
+  });
+  const { rows } = classifyBulkPurchases(
+    [
+      row({ reference: 'INV-1042', store: 'Ashu Traderz' }), // same store → DUPLICATE
+      row({ reference: 'INV-1042', store: 'Warehouse B' }), // different store → NEW
+      row({ reference: 'INV-1042', store: '' }), // no store → NEW (different key)
+    ],
+    c
+  );
+  assert.deepEqual(
+    rows.map((r) => r.status),
+    ['DUPLICATE', 'NEW', 'NEW']
+  );
 });
 
 // --- Excel path parity: rowsFromGrid + cellToString ---
@@ -189,6 +221,57 @@ test('excel parity: a grid built from spreadsheet cells classifies same as CSV',
   assert.equal(out[0].parsed?.productId, 'p8');
   assert.equal(out[0].parsed?.dateISO, '2026-07-18');
   assert.equal(out[0].parsed?.totalCost, 2500);
+});
+
+// --- import selection (what the commit path is allowed to write) ---
+
+test('selectImportableRows: NEW always; POSSIBLE only if ticked; never ERROR/DUPLICATE', () => {
+  const rows = classifyBulkPurchases(
+    [
+      row(), // NEW
+      row({ reference: 'B' }),
+      row({ reference: 'B' }), // in-file DUPLICATE
+      row({ quantity: '0' }), // ERROR
+      row({ productSku: '1010' }), // POSSIBLE_DUPLICATE (soft match below)
+    ],
+    ctx({ existingSoftKeys: new Set([softKeyOf('p10', '2026-07-18', 10, 250)]) })
+  ).rows;
+
+  const statuses = rows.map((r) => r.status);
+  assert.deepEqual(statuses, ['NEW', 'NEW', 'DUPLICATE', 'ERROR', 'POSSIBLE_DUPLICATE']);
+
+  // Nothing ticked → only the two NEW rows.
+  const none = selectImportableRows(rows, new Set());
+  assert.deepEqual(none.map((r) => r.line), [1, 2]);
+
+  // Tick the possible-duplicate line (5) → it joins; duplicates/errors never do.
+  const withPossible = selectImportableRows(rows, new Set([5]));
+  assert.deepEqual(withPossible.map((r) => r.line), [1, 2, 5]);
+
+  // A ticked line that is NOT a possible-duplicate (e.g. the DUPLICATE line 3)
+  // is still never importable.
+  const tickDup = selectImportableRows(rows, new Set([3, 4]));
+  assert.deepEqual(tickDup.map((r) => r.line), [1, 2]);
+});
+
+test('import works with ZERO NEW rows: a ticked possible-duplicate is importable', () => {
+  const c = ctx({ existingSoftKeys: new Set([softKeyOf('p8', '2026-07-18', 10, 250)]) });
+  const rows = classifyBulkPurchases([row()], c).rows;
+  assert.equal(rows[0].status, 'POSSIBLE_DUPLICATE');
+  assert.equal(rows.filter((r) => r.status === 'NEW').length, 0); // no NEW rows at all
+  // Nothing ticked → nothing importable.
+  assert.equal(selectImportableRows(rows, new Set()).length, 0);
+  // Tick the possible row → it becomes importable even with zero NEW rows.
+  assert.deepEqual(selectImportableRows(rows, new Set([1])).map((r) => r.line), [1]);
+});
+
+test('selectImportableRows: empty when only duplicates/errors exist', () => {
+  const rows: ClassifiedBulkRow[] = classifyBulkPurchases(
+    [row({ quantity: 'x' }), row({ reference: 'C' }), row({ reference: 'C' })],
+    ctx()
+  ).rows;
+  // line1 ERROR, line2 NEW, line3 DUPLICATE -> only line2 importable
+  assert.deepEqual(selectImportableRows(rows, new Set()).map((r) => r.line), [2]);
 });
 
 test('summary counts every bucket', () => {
