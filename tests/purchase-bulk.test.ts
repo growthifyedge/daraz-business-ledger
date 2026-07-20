@@ -7,6 +7,8 @@ import {
   parseBulkPurchaseCsv,
   classifyBulkPurchases,
   bulkPurchaseTemplateCsv,
+  rowsFromGrid,
+  cellToString,
   refKeyOf,
   softKeyOf,
   BULK_PURCHASE_HEADERS,
@@ -136,6 +138,57 @@ test('rule precedence: reference duplicate wins over soft match', () => {
   });
   const { rows } = classifyBulkPurchases([row({ reference: 'INV-1042' })], c);
   assert.equal(rows[0].status, 'DUPLICATE');
+});
+
+// --- Excel path parity: rowsFromGrid + cellToString ---
+
+test('cellToString: Date → ISO, number → string (numeric SKU), null → empty', () => {
+  assert.equal(cellToString(new Date(Date.UTC(2026, 6, 18))), '2026-07-18T00:00:00.000Z');
+  assert.equal(cellToString(1008), '1008');
+  assert.equal(cellToString(250.5), '250.5');
+  assert.equal(cellToString(null), '');
+  assert.equal(cellToString(undefined), '');
+  assert.equal(cellToString({ richText: [{ text: 'box' }, { text: ' tape' }] }), 'box tape');
+  assert.equal(cellToString({ result: 42 }), '42');
+});
+
+test('rowsFromGrid: header-keyed, column-order independent (shared with CSV)', () => {
+  const grid = [
+    ['quantity', 'date', 'productSku', 'unitCost', 'reference', 'store', 'purchasedBy', 'notes'],
+    ['5', '2026-07-01', '1010', '300', 'R1', 'Ashu Traderz', 'Yahya', 'ok'],
+  ];
+  const rows = rowsFromGrid(grid);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].productSku, '1010');
+  assert.equal(rows[0].quantity, '5');
+});
+
+test('rowsFromGrid: missing column and empty grid throw', () => {
+  assert.throws(() => rowsFromGrid([['date', 'productSku', 'quantity']]), /Missing required column/);
+  assert.throws(() => rowsFromGrid([]), /empty/);
+});
+
+test('excel parity: a grid built from spreadsheet cells classifies same as CSV', () => {
+  // Simulate what exceljs yields: numeric SKU/qty/cost and a Date cell.
+  const grid = [
+    [...BULK_PURCHASE_HEADERS],
+    [
+      cellToString(new Date(Date.UTC(2026, 6, 18))),
+      cellToString(1008), // numeric SKU
+      cellToString(10),
+      cellToString(250),
+      cellToString('INV-1042'),
+      cellToString('Ashu Traderz'),
+      cellToString('Yahya'),
+      cellToString('restock'),
+    ],
+  ];
+  const rows = rowsFromGrid(grid);
+  const { rows: out } = classifyBulkPurchases(rows, ctx());
+  assert.equal(out[0].status, 'NEW');
+  assert.equal(out[0].parsed?.productId, 'p8');
+  assert.equal(out[0].parsed?.dateISO, '2026-07-18');
+  assert.equal(out[0].parsed?.totalCost, 2500);
 });
 
 test('summary counts every bucket', () => {

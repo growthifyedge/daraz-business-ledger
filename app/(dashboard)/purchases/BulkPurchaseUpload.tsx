@@ -49,14 +49,20 @@ export function BulkPurchaseUpload() {
                 </div>
 
                 <div className="mb-4 flex flex-wrap items-end gap-3">
-                  <TemplateButton />
+                  <CsvTemplateButton />
+                  <a
+                    href="/api/purchases/bulk-template"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <Download className="h-4 w-4" /> Download Excel template
+                  </a>
                   <form action={action} className="flex flex-wrap items-end gap-2">
                     <label className="text-sm">
-                      <span className="mb-1 block font-medium text-slate-700">CSV file</span>
+                      <span className="mb-1 block font-medium text-slate-700">CSV or Excel file</span>
                       <input
                         type="file"
                         name="file"
-                        accept=".csv"
+                        accept=".csv,.xlsx"
                         required
                         className="block text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-slate-200"
                       />
@@ -148,7 +154,7 @@ export function BulkPurchaseUpload() {
   );
 }
 
-function TemplateButton() {
+function CsvTemplateButton() {
   const ref = useRef<HTMLAnchorElement>(null);
   function download() {
     const blob = new Blob([bulkPurchaseTemplateCsv()], { type: 'text/csv;charset=utf-8' });
@@ -162,7 +168,7 @@ function TemplateButton() {
   return (
     <>
       <Button variant="outline" size="sm" onClick={download} type="button">
-        <Download className="h-4 w-4" /> Download template
+        <Download className="h-4 w-4" /> Download CSV template
       </Button>
       <a ref={ref} className="hidden" aria-hidden />
     </>
