@@ -19,7 +19,6 @@ import {
   Card,
   CardBody,
   StatCard,
-  Badge,
   EmptyState,
   Field,
   Input,
@@ -31,7 +30,7 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney, formatNumber, formatDate, toDateInput, humanize } from '@/lib/utils';
+import { formatMoney, formatNumber, formatDate, toDateInput } from '@/lib/utils';
 
 interface Opt {
   id: string;
@@ -49,7 +48,6 @@ interface PurchaseRow {
   unitCost: number;
   totalCost: number;
   paymentStatus: PaymentStatus;
-  remaining: number;
   reimbursementDate: string | null;
   bankReference: string | null;
   invoiceUrl: string | null;
@@ -106,7 +104,6 @@ export function PurchasesManager({
     qty: p.quantity,
     unitCost: p.unitCost,
     total: p.totalCost,
-    status: humanize(p.paymentStatus),
     bankRef: p.bankReference ?? '',
   }));
 
@@ -132,7 +129,6 @@ export function PurchasesManager({
               { key: 'qty', label: 'Qty' },
               { key: 'unitCost', label: 'Unit Cost', money: true },
               { key: 'total', label: 'Total', money: true },
-              { key: 'status', label: 'Status' },
               { key: 'bankRef', label: 'Bank Ref' },
             ]}
             rows={exportRows}
@@ -145,20 +141,11 @@ export function PurchasesManager({
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Purchases page shows purchase records only. All payment figures —
+          Payable to Yahya, record payment, recent payments and void — live in
+          the Payments dialog. Payment status / balances are not shown per row. */}
+      <div className="mb-4 grid grid-cols-2 gap-3">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
-        <StatCard
-          label="Payable to Yahya"
-          value={formatMoney(totals.payable)}
-          hint="Outstanding balance (unpaid + partially paid)"
-          tone={totals.payable > 0 ? 'warning' : 'default'}
-        />
-        <StatCard
-          label="Payment reconciliation pending"
-          value={formatMoney(totals.reconciliationPending)}
-          hint="Not owed or paid"
-          tone={totals.reconciliationPending > 0 ? 'warning' : 'default'}
-        />
         <StatCard label="Purchase Records" value={formatNumber(totals.count)} />
       </div>
 
@@ -197,8 +184,6 @@ export function PurchasesManager({
                   <TH align="right">Qty</TH>
                   <TH align="right">Unit</TH>
                   <TH align="right">Total</TH>
-                  <TH align="right">Remaining</TH>
-                  <TH align="center">Status</TH>
                   <TH align="center">Invoice</TH>
                   <TH align="right">Actions</TH>
                 </TRow>
@@ -215,26 +200,6 @@ export function PurchasesManager({
                     <TD align="right">{formatMoney(p.unitCost)}</TD>
                     <TD align="right" className="font-medium">
                       {formatMoney(p.totalCost)}
-                    </TD>
-                    <TD align="right" className={p.remaining > 0 ? 'text-amber-700' : 'text-slate-400'}>
-                      {p.paymentStatus === 'RECONCILIATION_PENDING' ? '—' : formatMoney(p.remaining)}
-                    </TD>
-                    <TD align="center">
-                      <Badge
-                        tone={
-                          p.paymentStatus === 'PAID'
-                            ? 'green'
-                            : p.paymentStatus === 'RECONCILIATION_PENDING'
-                              ? 'blue'
-                              : p.paymentStatus === 'PARTIALLY_PAID'
-                                ? 'purple'
-                                : 'amber'
-                        }
-                      >
-                        {p.paymentStatus === 'RECONCILIATION_PENDING'
-                          ? 'Reconciliation pending'
-                          : humanize(p.paymentStatus)}
-                      </Badge>
                     </TD>
                     <TD align="center">
                       {p.invoiceUrl ? (
