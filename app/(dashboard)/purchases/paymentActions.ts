@@ -24,13 +24,16 @@ async function recomputePurchaseStatuses(tx: Tx, purchaseIds: string[]) {
   const ids = [...new Set(purchaseIds)];
   if (ids.length === 0) return;
 
+  // Select ALL allocation rows (with their payment's voided flag) so we can
+  // tell a legacy PAID purchase (no allocations ever) from one that was paid via
+  // allocations and later voided (rows exist but now total 0).
   const purchases = await tx.purchase.findMany({
     where: { id: { in: ids } },
     select: {
       id: true,
       totalCost: true,
       paymentStatus: true,
-      paymentAllocations: { where: { payment: { voided: false } }, select: { amount: true } },
+      paymentAllocations: { select: { amount: true, payment: { select: { voided: true } } } },
     },
   });
 
@@ -39,7 +42,10 @@ async function recomputePurchaseStatuses(tx: Tx, purchaseIds: string[]) {
       id: p.id,
       paymentStatus: p.paymentStatus,
       totalCost: p.totalCost,
-      allocatedAmount: p.paymentAllocations.reduce((s, a) => s + a.amount, 0),
+      allocatedAmount: p.paymentAllocations
+        .filter((a) => !a.payment.voided)
+        .reduce((s, a) => s + a.amount, 0),
+      hasAllocations: p.paymentAllocations.length > 0,
     }))
   );
 
