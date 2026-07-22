@@ -12,6 +12,7 @@ import {
   validateAllocations,
   combineYahyaCash,
   allocateFifo,
+  planStatusUpdates,
   round2,
   transferPaidForScope,
   type FifoPurchase,
@@ -45,6 +46,20 @@ test('deriveStatus: UNPAID / PARTIALLY_PAID / PAID from allocations', () => {
   assert.equal(deriveStatus(P({ allocatedAmount: 0 })), 'UNPAID');
   assert.equal(deriveStatus(P({ allocatedAmount: 400 })), 'PARTIALLY_PAID');
   assert.equal(deriveStatus(P({ allocatedAmount: 1000 })), 'PAID');
+});
+
+test('paidToDate/deriveStatus: legacy PAID (no allocations) vs voided PAID (allocations exist)', () => {
+  // Legacy PAID, never had allocations → stays fully paid.
+  assert.equal(paidToDate(P({ paymentStatus: 'PAID', allocatedAmount: 0, hasAllocations: false })), 1000);
+  assert.equal(deriveStatus(P({ paymentStatus: 'PAID', allocatedAmount: 0, hasAllocations: false })), 'PAID');
+  // Was paid via allocations, now voided (rows exist, non-voided total 0) → reverts.
+  assert.equal(paidToDate(P({ paymentStatus: 'PAID', allocatedAmount: 0, hasAllocations: true })), 0);
+  assert.equal(deriveStatus(P({ paymentStatus: 'PAID', allocatedAmount: 0, hasAllocations: true })), 'UNPAID');
+  // One allocation left after a partial void → PARTIALLY_PAID.
+  assert.equal(
+    deriveStatus(P({ paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 300, hasAllocations: true })),
+    'PARTIALLY_PAID'
+  );
 });
 
 test('deriveStatus: RECONCILIATION_PENDING is never recomputed', () => {
@@ -199,6 +214,44 @@ test('fifo: fractional amounts stay balanced to the payment (no rounding drift)'
     { purchaseId: 'b', amount: 133.33 },
   ]);
   assert.equal(round2(r.allocations.reduce((s, a) => s + a.amount, 0)), 333.33);
+});
+
+// --- bulk status recompute planning ---
+
+test('planStatusUpdates: groups changed purchases by target status', () => {
+  const plan = planStatusUpdates([
+    { id: 'a', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 1000, hasAllocations: true }, // → PAID
+    { id: 'b', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 400, hasAllocations: true }, // → PARTIALLY_PAID
+    { id: 'c', paymentStatus: 'PARTIALLY_PAID', totalCost: 500, allocatedAmount: 500, hasAllocations: true }, // → PAID
+  ]);
+  const byStatus = Object.fromEntries(plan.map((u) => [u.status, u.ids.sort()]));
+  assert.deepEqual(byStatus.PAID, ['a', 'c']);
+  assert.deepEqual(byStatus.PARTIALLY_PAID, ['b']);
+});
+
+test('planStatusUpdates: skips already-correct and RECONCILIATION_PENDING purchases', () => {
+  const plan = planStatusUpdates([
+    { id: 'a', paymentStatus: 'PARTIALLY_PAID', totalCost: 1000, allocatedAmount: 400, hasAllocations: true },
+    { id: 'b', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 0, hasAllocations: false },
+    { id: 'c', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 1000, hasAllocations: true },
+    { id: 'd', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 900, hasAllocations: true },
+  ]);
+  assert.equal(plan.length, 0);
+});
+
+test('planStatusUpdates: voiding a FIFO payment reverts its purchases; legacy PAID stays PAID', () => {
+  const plan = planStatusUpdates([
+    // Was PAID via allocations, now all voided (rows exist, non-voided total 0) → UNPAID.
+    { id: 'a', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 0, hasAllocations: true },
+    // Was PAID via allocations, one voided leaving 300 → PARTIALLY_PAID.
+    { id: 'b', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 300, hasAllocations: true },
+    // Legacy PAID with NO allocations ever → stays PAID (unchanged, not in plan).
+    { id: 'c', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 0, hasAllocations: false },
+  ]);
+  const byStatus = Object.fromEntries(plan.map((u) => [u.status, u.ids]));
+  assert.deepEqual(byStatus.UNPAID, ['a']); // reverted
+  assert.deepEqual(byStatus.PARTIALLY_PAID, ['b']); // reverted
+  assert.equal(plan.some((u) => u.ids.includes('c')), false); // legacy stays PAID
 });
 
 // --- shared cash summary (combineYahyaCash): one source, no double-count ---

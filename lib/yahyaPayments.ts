@@ -22,15 +22,27 @@ export interface PurchasePaidInput {
   totalCost: number;
   /** Σ of this purchase's non-voided allocation amounts. */
   allocatedAmount: number;
+  /**
+   * Whether the purchase has ANY payment allocation rows at all (voided or not).
+   * Distinguishes a legacy PAID purchase that predates the payment system (no
+   * allocations ever) from one that was paid via allocations and later voided
+   * (allocations exist but now total 0). Defaults to false → legacy behaviour.
+   */
+  hasAllocations?: boolean;
 }
 
 /**
- * Amount settled so far. Legacy fallback: a PAID purchase with no allocations
- * is treated as fully paid, so existing history needs no data migration.
+ * Amount settled so far.
+ *  - Non-voided allocations, when present, are authoritative.
+ *  - Legacy fallback: a PAID purchase that has NEVER had an allocation is treated
+ *    as fully paid (historical rows need no data migration).
+ *  - A purchase that has allocation rows (even if all now voided) is NOT legacy:
+ *    its paid-to-date is exactly its non-voided total, so voiding correctly
+ *    reverts it toward UNPAID / PARTIALLY_PAID.
  */
 export function paidToDate(p: PurchasePaidInput): number {
   if (p.allocatedAmount > 0) return round2(p.allocatedAmount);
-  if (p.paymentStatus === 'PAID') return round2(p.totalCost);
+  if (p.paymentStatus === 'PAID' && !p.hasAllocations) return round2(p.totalCost);
   return 0;
 }
 
@@ -54,6 +66,41 @@ export function deriveStatus(p: PurchasePaidInput): PaymentStatus {
 /** A purchase may receive a Yahya payment allocation. */
 export function isPayable(status: PaymentStatus): boolean {
   return status === 'UNPAID' || status === 'PARTIALLY_PAID';
+}
+
+export interface PurchaseStatusRow {
+  id: string;
+  paymentStatus: PaymentStatus;
+  totalCost: number;
+  /** Σ non-voided allocation amounts for this purchase. */
+  allocatedAmount: number;
+  /** Whether the purchase has any allocation rows at all (voided or not). */
+  hasAllocations: boolean;
+}
+
+/**
+ * Plan the minimal set of status updates for a batch of purchases: group the
+ * purchases whose derived status changed by their target status. Purchases that
+ * are RECONCILIATION_PENDING or already correct are skipped. Pure — the action
+ * turns each group into a single `updateMany`, so the recompute costs a constant
+ * number of round-trips instead of two per purchase.
+ */
+export function planStatusUpdates(rows: PurchaseStatusRow[]): { status: PaymentStatus; ids: string[] }[] {
+  const byTarget = new Map<PaymentStatus, string[]>();
+  for (const p of rows) {
+    if (p.paymentStatus === 'RECONCILIATION_PENDING') continue;
+    const next = deriveStatus({
+      paymentStatus: p.paymentStatus,
+      totalCost: p.totalCost,
+      allocatedAmount: p.allocatedAmount,
+      hasAllocations: p.hasAllocations,
+    });
+    if (next === p.paymentStatus) continue;
+    const arr = byTarget.get(next) ?? [];
+    arr.push(p.id);
+    byTarget.set(next, arr);
+  }
+  return [...byTarget.entries()].map(([status, ids]) => ({ status, ids }));
 }
 
 /** Total still owed to Yahya across all payable purchases. */

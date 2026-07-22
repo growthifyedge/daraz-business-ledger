@@ -7,41 +7,50 @@ import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { str, num } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
-import {
-  allocateFifo,
-  deriveStatus,
-  round2,
-  type FifoPurchase,
-} from '@/lib/yahyaPayments';
+import { allocateFifo, planStatusUpdates, round2, type FifoPurchase } from '@/lib/yahyaPayments';
 
 type Tx = Prisma.TransactionClient;
 
-/** Recompute and persist paymentStatus for the given purchases from their
- *  non-voided allocations. RECONCILIATION_PENDING purchases are never touched. */
+/**
+ * Recompute and persist paymentStatus for the given purchases from their
+ * non-voided allocations. RECONCILIATION_PENDING purchases are never touched.
+ *
+ * Bulk: one `findMany` for all purchases, then at most one `updateMany` per
+ * target status — a constant number of round-trips regardless of how many
+ * purchases a payment spans (the old per-purchase loop did 2×N round-trips,
+ * which timed out over the remote pooler for multi-purchase FIFO payments).
+ */
 async function recomputePurchaseStatuses(tx: Tx, purchaseIds: string[]) {
-  for (const id of [...new Set(purchaseIds)]) {
-    const p = await tx.purchase.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        totalCost: true,
-        paymentStatus: true,
-        paymentAllocations: {
-          where: { payment: { voided: false } },
-          select: { amount: true },
-        },
-      },
-    });
-    if (!p || p.paymentStatus === 'RECONCILIATION_PENDING') continue;
-    const allocatedAmount = p.paymentAllocations.reduce((s, a) => s + a.amount, 0);
-    const next = deriveStatus({
+  const ids = [...new Set(purchaseIds)];
+  if (ids.length === 0) return;
+
+  // Select ALL allocation rows (with their payment's voided flag) so we can
+  // tell a legacy PAID purchase (no allocations ever) from one that was paid via
+  // allocations and later voided (rows exist but now total 0).
+  const purchases = await tx.purchase.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      totalCost: true,
+      paymentStatus: true,
+      paymentAllocations: { select: { amount: true, payment: { select: { voided: true } } } },
+    },
+  });
+
+  const updates = planStatusUpdates(
+    purchases.map((p) => ({
+      id: p.id,
       paymentStatus: p.paymentStatus,
       totalCost: p.totalCost,
-      allocatedAmount,
-    });
-    if (next !== p.paymentStatus) {
-      await tx.purchase.update({ where: { id }, data: { paymentStatus: next } });
-    }
+      allocatedAmount: p.paymentAllocations
+        .filter((a) => !a.payment.voided)
+        .reduce((s, a) => s + a.amount, 0),
+      hasAllocations: p.paymentAllocations.length > 0,
+    }))
+  );
+
+  for (const u of updates) {
+    await tx.purchase.updateMany({ where: { id: { in: u.ids } }, data: { paymentStatus: u.status } });
   }
 }
 
@@ -120,7 +129,9 @@ export async function recordYahyaPayment(
       });
       await recomputePurchaseStatuses(tx, ids);
       return payment.id;
-    });
+      // Generous limits: the remote pooler has high per-round-trip latency, and
+      // the default 5s interactive-transaction timeout is too small.
+    }, { timeout: 120_000, maxWait: 20_000 });
 
     await logAudit({
       user,
@@ -138,7 +149,9 @@ export async function recordYahyaPayment(
     });
     revalidatePath('/purchases');
     return ok('Payment recorded and auto-allocated (FIFO).');
-  } catch {
+  } catch (e) {
+    // Surface the real error to server logs instead of swallowing it.
+    console.error('[recordYahyaPayment] failed', e);
     return fail('Could not record the payment — nothing was written.');
   }
 }
@@ -196,13 +209,16 @@ export async function voidYahyaPayment(formData: FormData) {
   if (!payment || payment.voided) return;
   const affected = payment.allocations.map((a) => a.purchaseId);
 
-  await prisma.$transaction(async (tx) => {
-    await tx.yahyaPayment.update({
-      where: { id },
-      data: { voided: true, voidedAt: new Date(), voidReason: voidReason || null },
-    });
-    await recomputePurchaseStatuses(tx, affected);
-  });
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.yahyaPayment.update({
+        where: { id },
+        data: { voided: true, voidedAt: new Date(), voidReason: voidReason || null },
+      });
+      await recomputePurchaseStatuses(tx, affected);
+    },
+    { timeout: 120_000, maxWait: 20_000 }
+  );
 
   await logAudit({
     user,
