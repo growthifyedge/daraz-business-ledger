@@ -22,6 +22,7 @@ enum Role {
 
 enum PaymentStatus {
   UNPAID
+  PARTIALLY_PAID // some — but not all — of the payable settled by Yahya payment allocations
   PAID
   RECONCILIATION_PENDING // paid in reality but amount/date not yet reconciled; NOT owed, NOT a settled payment, no cash-flow impact
 }
@@ -218,9 +219,53 @@ model Purchase {
   updatedAt         DateTime      @updatedAt
   deletedAt         DateTime?
 
+  paymentAllocations YahyaPaymentAllocation[]
+
   @@index([date])
   @@index([productId])
   @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Yahya payments — one real bank transfer, allocated across one or more
+// purchases. A payment MUST be fully allocated (Σ allocations == amount); no
+// advances/credits in this MVP. Cash flow counts each YahyaPayment.amount once.
+// ---------------------------------------------------------------------------
+
+model YahyaPayment {
+  id            String    @id @default(cuid())
+  date          DateTime // when the bank transfer happened
+  amount        Float // total transferred; must equal Σ allocation.amount
+  bankAccount   String? // account paid from
+  bankReference String? // transaction / slip reference
+  notes         String?
+  voided        Boolean   @default(false) // soft-void; a voided payment counts for nothing
+  voidedAt      DateTime?
+  voidReason    String?
+  createdById   String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  allocations YahyaPaymentAllocation[]
+
+  @@index([date])
+  @@index([voided])
+}
+
+model YahyaPaymentAllocation {
+  id         String       @id @default(cuid())
+  paymentId  String
+  payment    YahyaPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  purchaseId String
+  purchase   Purchase     @relation(fields: [purchaseId], references: [id])
+  amount     Float // portion of the payment applied to this purchase (> 0)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@unique([paymentId, purchaseId]) // one allocation row per purchase per payment
+  @@index([paymentId])
+  @@index([purchaseId])
 }
 
 // ---------------------------------------------------------------------------

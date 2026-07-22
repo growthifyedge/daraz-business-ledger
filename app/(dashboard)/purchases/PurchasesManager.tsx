@@ -2,8 +2,10 @@
 
 import { useActionState, useEffect, useState } from 'react';
 import { Plus, Pencil, ShoppingCart, FileText } from 'lucide-react';
+import type { PaymentStatus } from '@prisma/client';
 import { savePurchase, deletePurchase } from './actions';
 import { BulkPurchaseUpload } from './BulkPurchaseUpload';
+import { YahyaPayments, type PayablePurchase, type PaymentRecord } from './YahyaPayments';
 import { initialFormState } from '@/lib/formState';
 import { Button, SubmitButton } from '@/components/Button';
 import { Modal } from '@/components/Modal';
@@ -46,29 +48,38 @@ interface PurchaseRow {
   quantity: number;
   unitCost: number;
   totalCost: number;
-  paymentStatus: 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING';
+  paymentStatus: PaymentStatus;
+  remaining: number;
   reimbursementDate: string | null;
   bankReference: string | null;
   invoiceUrl: string | null;
   notes: string | null;
 }
 
+type NewPurchaseStatus = 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING';
+
 export function PurchasesManager({
   purchases,
   products,
   stores,
   totals,
+  payablePurchases,
+  payments,
   meta,
 }: {
   purchases: PurchaseRow[];
   products: Opt[];
   stores: Opt[];
-  totals: { total: number; unpaid: number; reconciliationPending: number; count: number };
+  totals: { total: number; payable: number; reconciliationPending: number; count: number };
+  payablePurchases: PayablePurchase[];
+  payments: PaymentRecord[];
   meta: PageMeta;
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<PurchaseRow | null>(null);
-  const [status, setStatus] = useState<'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING'>('UNPAID');
+  // The manual New Purchase form does not offer PARTIALLY_PAID (that is derived
+  // from Yahya payment allocations, never set by hand).
+  const [status, setStatus] = useState<NewPurchaseStatus>('UNPAID');
   const [state, formAction] = useActionState(savePurchase, initialFormState);
 
   useEffect(() => {
@@ -85,7 +96,8 @@ export function PurchasesManager({
   }
   function openEdit(row: PurchaseRow) {
     setEditing(row);
-    setStatus(row.paymentStatus);
+    // PARTIALLY_PAID is derived from payments — the manual select can't set it.
+    setStatus(row.paymentStatus === 'PARTIALLY_PAID' ? 'UNPAID' : row.paymentStatus);
     setOpen(true);
   }
 
@@ -128,6 +140,7 @@ export function PurchasesManager({
             rows={exportRows}
           />
           <BulkPurchaseUpload />
+          <YahyaPayments payablePurchases={payablePurchases} payments={payments} />
           <Button onClick={openNew}>
             <Plus className="h-4 w-4" /> New Purchase
           </Button>
@@ -137,9 +150,10 @@ export function PurchasesManager({
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
         <StatCard
-          label="Unpaid (owed to Yahya)"
-          value={formatMoney(totals.unpaid)}
-          tone={totals.unpaid > 0 ? 'warning' : 'default'}
+          label="Payable to Yahya"
+          value={formatMoney(totals.payable)}
+          hint="Outstanding balance (unpaid + partially paid)"
+          tone={totals.payable > 0 ? 'warning' : 'default'}
         />
         <StatCard
           label="Payment reconciliation pending"
@@ -185,6 +199,7 @@ export function PurchasesManager({
                   <TH align="right">Qty</TH>
                   <TH align="right">Unit</TH>
                   <TH align="right">Total</TH>
+                  <TH align="right">Remaining</TH>
                   <TH align="center">Status</TH>
                   <TH align="center">Invoice</TH>
                   <TH align="right">Actions</TH>
@@ -203,6 +218,9 @@ export function PurchasesManager({
                     <TD align="right" className="font-medium">
                       {formatMoney(p.totalCost)}
                     </TD>
+                    <TD align="right" className={p.remaining > 0 ? 'text-amber-700' : 'text-slate-400'}>
+                      {p.paymentStatus === 'RECONCILIATION_PENDING' ? '—' : formatMoney(p.remaining)}
+                    </TD>
                     <TD align="center">
                       <Badge
                         tone={
@@ -210,7 +228,9 @@ export function PurchasesManager({
                             ? 'green'
                             : p.paymentStatus === 'RECONCILIATION_PENDING'
                               ? 'blue'
-                              : 'amber'
+                              : p.paymentStatus === 'PARTIALLY_PAID'
+                                ? 'purple'
+                                : 'amber'
                         }
                       >
                         {p.paymentStatus === 'RECONCILIATION_PENDING'

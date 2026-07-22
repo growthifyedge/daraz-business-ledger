@@ -81,8 +81,9 @@ export default async function CashFlowPage({
           tone="positive"
         />
         <StatCard
-          label="Reimbursements Paid (to Yahya)"
+          label="Paid to Yahya"
           value={formatMoney(cash.reimbursementsPaid)}
+          hint="Bank transfers + legacy paid purchases"
         />
         <StatCard label="Expenses Paid" value={formatMoney(cash.expensesPaid)} />
         <StatCard label="Payouts Paid" value={formatMoney(cash.payoutsPaid)} />
@@ -92,8 +93,9 @@ export default async function CashFlowPage({
           tone={cash.netCashBalance >= 0 ? 'positive' : 'brand'}
         />
         <StatCard
-          label="Unpaid Purchases (owed to Yahya)"
+          label="Payable to Yahya"
           value={formatMoney(cash.stockPurchaseUnpaid)}
+          hint="Outstanding balance (unpaid + partially paid)"
           tone={cash.stockPurchaseUnpaid > 0 ? 'warning' : 'default'}
         />
         <StatCard

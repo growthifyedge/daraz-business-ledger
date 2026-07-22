@@ -19,6 +19,10 @@ export function classifyPurchasePayment(status: PaymentStatus): PurchasePaymentC
     case 'PAID':
       return 'paidToYahya';
     case 'UNPAID':
+    // A partially-paid purchase is still (partly) owed. Reports are not rewired
+    // in this step, so it is bucketed with owed for now; the accurate remaining
+    // balance is shown by the Payable-to-Yahya summary / getYahyaPayable().
+    case 'PARTIALLY_PAID':
       return 'owedToYahya';
     case 'RECONCILIATION_PENDING':
       return 'reconciliationPending';

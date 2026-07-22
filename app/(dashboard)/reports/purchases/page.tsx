@@ -3,7 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { parseFilter, rangeLabel, type SearchParams } from '@/lib/filters';
-import { summarizePurchasePayments } from '@/lib/purchasePayments';
+import { getYahyaCashSummary } from '@/lib/calculations';
 import { FilterBar } from '@/components/FilterBar';
 import { ExportButtons } from '@/components/ExportButtons';
 import {
@@ -45,7 +45,7 @@ export default async function PurchasesReportPage({
   }
   if (filter.storeId) where.storeId = filter.storeId;
 
-  const [stores, purchases] = await Promise.all([
+  const [stores, purchases, yahya] = await Promise.all([
     prisma.store.findMany({
       where: { deletedAt: null },
       select: { id: true, name: true },
@@ -66,6 +66,7 @@ export default async function PurchasesReportPage({
         store: { select: { name: true } },
       },
     }),
+    getYahyaCashSummary(filter),
   ]);
 
   const rows = purchases.map((p) => ({
@@ -83,7 +84,8 @@ export default async function PurchasesReportPage({
   }));
 
   const total = purchases.reduce((a, p) => a + p.totalCost, 0);
-  const { owedToYahya: unpaid, reconciliationPending } = summarizePurchasePayments(purchases);
+  const payable = yahya.payableToYahya;
+  const reconciliationPending = yahya.reconciliationPending;
   const count = purchases.length;
 
   const columns = [
@@ -113,9 +115,10 @@ export default async function PurchasesReportPage({
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total Purchased" value={formatMoney(total)} tone="brand" />
         <StatCard
-          label="Unpaid (owed to Yahya)"
-          value={formatMoney(unpaid)}
-          tone={unpaid > 0 ? 'warning' : 'default'}
+          label="Payable to Yahya"
+          value={formatMoney(payable)}
+          hint="Outstanding balance (unpaid + partially paid)"
+          tone={payable > 0 ? 'warning' : 'default'}
         />
         <StatCard
           label="Payment reconciliation pending"

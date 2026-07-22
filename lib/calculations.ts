@@ -1,7 +1,8 @@
 import { prisma } from './prisma';
 import { PROFIT_SPLIT } from './config';
 import { saleCogs, returnRecoveredCogs } from './returns';
-import type { Prisma, ExpenseCategory } from '@prisma/client';
+import { combineYahyaCash, type YahyaCashSummary } from './yahyaPayments';
+import type { Prisma, ExpenseCategory, PaymentStatus } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
 // Shared filtering
@@ -354,6 +355,69 @@ export interface CashFlow {
   netCashBalance: number;
 }
 
+const PAYABLE_STATUSES: PaymentStatus[] = ['UNPAID', 'PARTIALLY_PAID'];
+
+/**
+ * The single shared source for Yahya money figures. Every screen calls this so
+ * they always agree. All purchase-derived figures honour the date/store filter.
+ *
+ * "Paid to Yahya" (nonVoidedTransferTotal):
+ *  - All Stores: Σ each non-voided bank transfer once.
+ *  - A specific store: Σ that store's share of each transfer — i.e. the
+ *    non-voided allocations to purchases in the selected store — so an Ashu
+ *    payment allocation never appears in a GrowthifyEdge report. Because every
+ *    payment is fully allocated, the two stores' shares always sum back to the
+ *    transfer total, so All Stores reconciles exactly.
+ */
+export async function getYahyaCashSummary(f: Filter = {}): Promise<YahyaCashSummary> {
+  const range = dateRange(f.from, f.to);
+  const purchaseWhere = (extra: Prisma.PurchaseWhereInput): Prisma.PurchaseWhereInput => {
+    const w: Prisma.PurchaseWhereInput = { deletedAt: null, ...extra };
+    if (range) w.date = range;
+    if (f.storeId) w.storeId = f.storeId;
+    return w;
+  };
+  const allocWhere = (statuses: PaymentStatus[]): Prisma.YahyaPaymentAllocationWhereInput => ({
+    payment: { voided: false },
+    purchase: purchaseWhere({ paymentStatus: { in: statuses } }),
+  });
+  const paymentWhere: Prisma.YahyaPaymentWhereInput = { voided: false };
+  if (range) paymentWhere.date = range;
+
+  // Paid-to-Yahya source: whole transfers for All Stores, else this store's
+  // allocated share of non-voided transfers (filtered by payment date).
+  const transferAgg = f.storeId
+    ? prisma.yahyaPaymentAllocation.aggregate({
+        where: { payment: paymentWhere, purchase: { deletedAt: null, storeId: f.storeId } },
+        _sum: { amount: true },
+      })
+    : prisma.yahyaPayment.aggregate({ where: paymentWhere, _sum: { amount: true } });
+
+  const [payableCost, payableAlloc, paidCost, paidAlloc, pendingCost, transfers] = await Promise.all([
+    prisma.purchase.aggregate({
+      where: purchaseWhere({ paymentStatus: { in: PAYABLE_STATUSES } }),
+      _sum: { totalCost: true },
+    }),
+    prisma.yahyaPaymentAllocation.aggregate({ where: allocWhere(PAYABLE_STATUSES), _sum: { amount: true } }),
+    prisma.purchase.aggregate({ where: purchaseWhere({ paymentStatus: 'PAID' }), _sum: { totalCost: true } }),
+    prisma.yahyaPaymentAllocation.aggregate({ where: allocWhere(['PAID']), _sum: { amount: true } }),
+    prisma.purchase.aggregate({
+      where: purchaseWhere({ paymentStatus: 'RECONCILIATION_PENDING' }),
+      _sum: { totalCost: true },
+    }),
+    transferAgg,
+  ]);
+
+  return combineYahyaCash({
+    payableTotalCost: payableCost._sum.totalCost ?? 0,
+    payableAllocated: payableAlloc._sum.amount ?? 0,
+    paidTotalCost: paidCost._sum.totalCost ?? 0,
+    paidAllocated: paidAlloc._sum.amount ?? 0,
+    reconciliationPendingTotalCost: pendingCost._sum.totalCost ?? 0,
+    nonVoidedTransferTotal: transfers._sum.amount ?? 0,
+  });
+}
+
 export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const range = dateRange(f.from, f.to);
 
@@ -371,48 +435,25 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const payoutWhere: Prisma.PayoutWhereInput = { deletedAt: null };
   if (range) payoutWhere.date = range;
 
-  const purchasePaidWhere: Prisma.PurchaseWhereInput = {
-    deletedAt: null,
-    paymentStatus: 'PAID',
-  };
-  const purchaseUnpaidWhere: Prisma.PurchaseWhereInput = {
-    deletedAt: null,
-    paymentStatus: 'UNPAID',
-  };
-  const purchasePendingWhere: Prisma.PurchaseWhereInput = {
-    deletedAt: null,
-    paymentStatus: 'RECONCILIATION_PENDING',
-  };
-  if (range) {
-    purchasePaidWhere.date = range;
-    purchaseUnpaidWhere.date = range;
-    purchasePendingWhere.date = range;
-  }
-  if (f.storeId) {
-    purchasePaidWhere.storeId = f.storeId;
-    purchaseUnpaidWhere.storeId = f.storeId;
-    purchasePendingWhere.storeId = f.storeId;
-  }
-
-  const [inv, settle, exp, payout, paid, unpaid, pending] = await Promise.all([
+  const [inv, settle, exp, payout, yahya] = await Promise.all([
     prisma.investment.aggregate({ where: investmentWhere, _sum: { amount: true } }),
     prisma.settlement.aggregate({ where: settlementWhere, _sum: { netAmount: true } }),
     prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
     prisma.payout.aggregate({ where: payoutWhere, _sum: { amount: true } }),
-    prisma.purchase.aggregate({ where: purchasePaidWhere, _sum: { totalCost: true } }),
-    prisma.purchase.aggregate({ where: purchaseUnpaidWhere, _sum: { totalCost: true } }),
-    prisma.purchase.aggregate({ where: purchasePendingWhere, _sum: { totalCost: true } }),
+    getYahyaCashSummary(f), // shared source — payments + legacy, payable, pending
   ]);
 
   const investment = inv._sum.amount ?? 0;
   const settlementsReceived = settle._sum.netAmount ?? 0;
   const expensesPaid = exp._sum.amount ?? 0;
   const payoutsPaid = payout._sum.amount ?? 0;
-  const reimbursementsPaid = paid._sum.totalCost ?? 0;
-  const stockPurchaseUnpaid = unpaid._sum.totalCost ?? 0;
+  // Actual cash paid to Yahya: each bank transfer counted once + legacy PAID.
+  const reimbursementsPaid = yahya.actualPaidToYahya;
+  // Outstanding balance owed to Yahya (UNPAID + PARTIALLY_PAID remaining).
+  const stockPurchaseUnpaid = yahya.payableToYahya;
   // Reconciliation-pending purchases are deliberately excluded from every cash
   // figure below — they are neither owed nor a settled payment.
-  const reconciliationPending = pending._sum.totalCost ?? 0;
+  const reconciliationPending = yahya.reconciliationPending;
 
   // Cash in hand = money in (investment + settlements) − money out
   // (reimbursements to Yahya + non-purchase expenses + profit payouts).

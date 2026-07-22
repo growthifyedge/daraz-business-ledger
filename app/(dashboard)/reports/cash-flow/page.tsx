@@ -41,7 +41,7 @@ export default async function CashFlowReportPage({
   const rows = [
     { item: 'Investment in', amount: cf.investment },
     { item: 'Settlements received', amount: cf.settlementsReceived },
-    { item: 'Reimbursements paid', amount: -cf.reimbursementsPaid },
+    { item: 'Paid to Yahya (transfers + legacy)', amount: -cf.reimbursementsPaid },
     { item: 'Expenses paid', amount: -cf.expensesPaid },
     { item: 'Payouts paid', amount: -cf.payoutsPaid },
     { item: 'Net Cash Balance', amount: cf.netCashBalance },
@@ -72,7 +72,7 @@ export default async function CashFlowReportPage({
           value={formatMoney(cf.reimbursementsPaid + cf.expensesPaid + cf.payoutsPaid)}
           tone="negative"
         />
-        <StatCard label="Unpaid Purchases" value={formatMoney(cf.stockPurchaseUnpaid)} tone="warning" />
+        <StatCard label="Payable to Yahya" value={formatMoney(cf.stockPurchaseUnpaid)} tone="warning" />
         <StatCard
           label="Payment reconciliation pending"
           value={formatMoney(cf.reconciliationPending)}

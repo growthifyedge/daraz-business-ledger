@@ -145,7 +145,7 @@ export default async function DashboardPage() {
             <p>− reimbursements, expenses & payouts</p>
             {cash.stockPurchaseUnpaid > 0 && (
               <p className="mt-1 font-semibold text-amber-200">
-                {formatMoney(cash.stockPurchaseUnpaid)} owed to Yahya (unpaid)
+                {formatMoney(cash.stockPurchaseUnpaid)} payable to Yahya
               </p>
             )}
             {cash.reconciliationPending > 0 && (
