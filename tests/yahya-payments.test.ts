@@ -11,8 +11,10 @@ import {
   totalPayable,
   validateAllocations,
   combineYahyaCash,
+  allocateFifo,
   round2,
   transferPaidForScope,
+  type FifoPurchase,
   type PurchasePaidInput,
   type AllocationTarget,
   type YahyaCashAggregates,
@@ -123,6 +125,80 @@ test('validate: PAID or RECONCILIATION_PENDING targets are rejected', () => {
   const pend = validateAllocations(100, [{ purchaseId: 'd', amount: 100 }], targets);
   assert.equal(pend.ok, false);
   assert.match(pend.error!, /RECONCILIATION_PENDING/);
+});
+
+// --- FIFO automatic allocation ---
+
+// Oldest first. RECONCILIATION_PENDING/PAID are excluded by the caller's query,
+// so they never appear in this list.
+const fifo = (): FifoPurchase[] => [
+  { purchaseId: 'a', remaining: 1000 }, // oldest
+  { purchaseId: 'b', remaining: 500 },
+  { purchaseId: 'c', remaining: 300 }, // newest
+];
+
+test('fifo: partial payment fills only the oldest purchase', () => {
+  const r = allocateFifo(300, fifo());
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.allocations, [{ purchaseId: 'a', amount: 300 }]);
+});
+
+test('fifo: one payment spills across purchases oldest-first', () => {
+  const r = allocateFifo(1200, fifo());
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.allocations, [
+    { purchaseId: 'a', amount: 1000 },
+    { purchaseId: 'b', amount: 200 },
+  ]);
+  assert.equal(round2(r.allocations.reduce((s, a) => s + a.amount, 0)), 1200); // exact
+});
+
+test('fifo: exactly the total payable allocates every purchase in full', () => {
+  const r = allocateFifo(1800, fifo()); // 1000+500+300
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.allocations, [
+    { purchaseId: 'a', amount: 1000 },
+    { purchaseId: 'b', amount: 500 },
+    { purchaseId: 'c', amount: 300 },
+  ]);
+});
+
+test('fifo: a payment greater than total payable is rejected', () => {
+  const r = allocateFifo(1801, fifo());
+  assert.equal(r.ok, false);
+  assert.match(r.error!, /exceeds the total payable/);
+  assert.equal(r.allocations.length, 0);
+});
+
+test('fifo: zero/negative amount and empty payable are rejected', () => {
+  assert.equal(allocateFifo(0, fifo()).ok, false);
+  assert.equal(allocateFifo(-5, fifo()).ok, false);
+  assert.equal(allocateFifo(100, []).ok, false);
+  assert.equal(allocateFifo(100, [{ purchaseId: 'x', remaining: 0 }]).ok, false);
+});
+
+test('fifo: ordering is honoured — the given oldest-first order drives allocation', () => {
+  // Same purchases in a different (newest-first) order → newest gets filled first.
+  const r = allocateFifo(600, [
+    { purchaseId: 'c', remaining: 300 },
+    { purchaseId: 'b', remaining: 500 },
+  ]);
+  assert.deepEqual(r.allocations, [
+    { purchaseId: 'c', amount: 300 },
+    { purchaseId: 'b', amount: 300 },
+  ]);
+});
+
+test('fifo: fractional amounts stay balanced to the payment (no rounding drift)', () => {
+  const r = allocateFifo(333.33, [
+    { purchaseId: 'a', remaining: 200 },
+    { purchaseId: 'b', remaining: 200 },
+  ]);
+  assert.deepEqual(r.allocations, [
+    { purchaseId: 'a', amount: 200 },
+    { purchaseId: 'b', amount: 133.33 },
+  ]);
+  assert.equal(round2(r.allocations.reduce((s, a) => s + a.amount, 0)), 333.33);
 });
 
 // --- shared cash summary (combineYahyaCash): one source, no double-count ---

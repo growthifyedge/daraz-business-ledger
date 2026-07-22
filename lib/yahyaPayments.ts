@@ -143,6 +143,64 @@ export interface AllocationInput {
   amount: number;
 }
 
+// ---------------------------------------------------------------------------
+// FIFO automatic allocation
+// ---------------------------------------------------------------------------
+
+export interface FifoPurchase {
+  purchaseId: string;
+  /** Current outstanding balance (excluding this payment). */
+  remaining: number;
+}
+
+export interface FifoResult {
+  ok: boolean;
+  error?: string;
+  allocations: AllocationInput[];
+}
+
+/**
+ * Automatically allocate a payment amount FIFO across the oldest eligible
+ * purchases (caller supplies them oldest-first; RECONCILIATION_PENDING and PAID
+ * are already excluded). Fills each purchase's remaining balance before moving
+ * to the next. A payment greater than the total payable is rejected. Because a
+ * valid payment is ≤ total payable, the returned allocations always sum to the
+ * amount exactly (the exact-allocation invariant), with no unallocated remainder.
+ */
+export function allocateFifo(amount: number, purchasesOldestFirst: FifoPurchase[]): FifoResult {
+  const amt = round2(amount);
+  if (!(amt > 0)) {
+    return { ok: false, error: 'Payment amount must be greater than zero.', allocations: [] };
+  }
+  const totalPayable = round2(
+    purchasesOldestFirst.reduce((s, p) => s + Math.max(0, round2(p.remaining)), 0)
+  );
+  if (totalPayable <= 0) {
+    return { ok: false, error: 'Nothing is payable to Yahya.', allocations: [] };
+  }
+  if (amt > totalPayable) {
+    return {
+      ok: false,
+      error: `Payment (${amt}) exceeds the total payable to Yahya (${totalPayable}).`,
+      allocations: [],
+    };
+  }
+
+  const allocations: AllocationInput[] = [];
+  let left = amt;
+  for (const p of purchasesOldestFirst) {
+    if (left <= 0) break;
+    const rem = round2(Math.max(0, p.remaining));
+    if (rem <= 0) continue;
+    const a = round2(Math.min(rem, left));
+    if (a > 0) {
+      allocations.push({ purchaseId: p.purchaseId, amount: a });
+      left = round2(left - a);
+    }
+  }
+  return { ok: true, allocations };
+}
+
 export interface AllocationTarget {
   purchaseId: string;
   status: PaymentStatus;
