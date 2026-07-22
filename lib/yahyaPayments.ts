@@ -52,20 +52,27 @@ export function remainingBalance(p: PurchasePaidInput): number {
 }
 
 /**
- * Derived status. RECONCILIATION_PENDING is historical and never recomputed —
- * it stays separate and is never driven by allocations.
+ * Derived status. A RECONCILIATION_PENDING purchase stays pending only while
+ * nothing has been paid against it; once a Yahya payment is allocated (FIFO) it
+ * settles like any other purchase — PARTIALLY_PAID or PAID.
  */
 export function deriveStatus(p: PurchasePaidInput): PaymentStatus {
-  if (p.paymentStatus === 'RECONCILIATION_PENDING') return 'RECONCILIATION_PENDING';
   const paid = paidToDate(p);
-  if (paid <= 0) return 'UNPAID';
+  if (paid <= 0) {
+    return p.paymentStatus === 'RECONCILIATION_PENDING' ? 'RECONCILIATION_PENDING' : 'UNPAID';
+  }
   if (paid < round2(p.totalCost)) return 'PARTIALLY_PAID';
   return 'PAID';
 }
 
-/** A purchase may receive a Yahya payment allocation. */
+/**
+ * A purchase may receive a Yahya payment allocation. RECONCILIATION_PENDING is
+ * now eligible (it is part of the debt), alongside UNPAID / PARTIALLY_PAID.
+ */
 export function isPayable(status: PaymentStatus): boolean {
-  return status === 'UNPAID' || status === 'PARTIALLY_PAID';
+  return (
+    status === 'UNPAID' || status === 'PARTIALLY_PAID' || status === 'RECONCILIATION_PENDING'
+  );
 }
 
 export interface PurchaseStatusRow {
@@ -81,14 +88,15 @@ export interface PurchaseStatusRow {
 /**
  * Plan the minimal set of status updates for a batch of purchases: group the
  * purchases whose derived status changed by their target status. Purchases that
- * are RECONCILIATION_PENDING or already correct are skipped. Pure — the action
- * turns each group into a single `updateMany`, so the recompute costs a constant
- * number of round-trips instead of two per purchase.
+ * are already at their derived status are skipped — including an untouched
+ * RECONCILIATION_PENDING purchase (paid 0 → derives back to pending, no change).
+ * A pending purchase that has received an allocation settles to PARTIALLY_PAID /
+ * PAID. Pure — the action turns each group into a single `updateMany`, so the
+ * recompute costs a constant number of round-trips instead of two per purchase.
  */
 export function planStatusUpdates(rows: PurchaseStatusRow[]): { status: PaymentStatus; ids: string[] }[] {
   const byTarget = new Map<PaymentStatus, string[]>();
   for (const p of rows) {
-    if (p.paymentStatus === 'RECONCILIATION_PENDING') continue;
     const next = deriveStatus({
       paymentStatus: p.paymentStatus,
       totalCost: p.totalCost,
@@ -120,9 +128,12 @@ export interface YahyaCashSummary {
   /** Actual money paid to Yahya: each non-voided bank transfer once, plus
    *  legacy PAID purchases that have no payment allocations. No double count. */
   actualPaidToYahya: number;
-  /** Outstanding balance of UNPAID + PARTIALLY_PAID purchases. */
+  /** Yahya Debt = Total Purchased (all statuses, incl. RECONCILIATION_PENDING)
+   *  − actual Paid to Yahya. */
   payableToYahya: number;
-  /** RECONCILIATION_PENDING — separate; never owed, paid, or in net cash. */
+  /** RECONCILIATION_PENDING totalCost — still reported separately for the
+   *  "reconciliation pending" badge. It is now also part of payableToYahya
+   *  (the debt) until actually paid; it stays out of net-cash figures. */
   reconciliationPending: number;
 }
 
@@ -171,9 +182,17 @@ export function transferPaidForScope(
 }
 
 export function combineYahyaCash(a: YahyaCashAggregates): YahyaCashSummary {
-  const payableToYahya = round2(a.payableTotalCost - a.payableAllocated);
+  // Everything ever purchased from Yahya, all statuses (UNPAID, PARTIALLY_PAID,
+  // PAID and RECONCILIATION_PENDING) included.
+  const totalPurchased = round2(
+    a.payableTotalCost + a.paidTotalCost + a.reconciliationPendingTotalCost
+  );
   const legacyPaidNoAllocation = round2(a.paidTotalCost - a.paidAllocated);
   const actualPaidToYahya = round2(a.nonVoidedTransferTotal + legacyPaidNoAllocation);
+  // Business rule: Yahya Debt = Total Purchased − Paid to Yahya. Recording a
+  // payment lowers the debt directly. RECONCILIATION_PENDING purchases are part
+  // of the debt (no longer excluded); they leave it only once actually paid.
+  const payableToYahya = round2(totalPurchased - actualPaidToYahya);
   return {
     actualPaidToYahya,
     payableToYahya,
