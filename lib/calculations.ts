@@ -449,10 +449,12 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const payoutsPaid = payout._sum.amount ?? 0;
   // Actual cash paid to Yahya: each bank transfer counted once + legacy PAID.
   const reimbursementsPaid = yahya.actualPaidToYahya;
-  // Outstanding balance owed to Yahya (UNPAID + PARTIALLY_PAID remaining).
+  // Yahya Debt = Total Purchased (all statuses, incl. RECONCILIATION_PENDING)
+  // − actual Paid to Yahya. This owed figure now folds in reconciliation-pending
+  // purchases; recording a payment reduces it directly.
   const stockPurchaseUnpaid = yahya.payableToYahya;
-  // Reconciliation-pending purchases are deliberately excluded from every cash
-  // figure below — they are neither owed nor a settled payment.
+  // Still surfaced on its own for the "reconciliation pending" badge. It is not
+  // added into netCashBalance below (that nets only actual cash movements).
   const reconciliationPending = yahya.reconciliationPending;
 
   // Cash in hand = money in (investment + settlements) − money out

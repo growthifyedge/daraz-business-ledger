@@ -62,25 +62,41 @@ test('paidToDate/deriveStatus: legacy PAID (no allocations) vs voided PAID (allo
   );
 });
 
-test('deriveStatus: RECONCILIATION_PENDING is never recomputed', () => {
+test('deriveStatus: RECONCILIATION_PENDING settles once a payment is allocated', () => {
+  // Untouched (nothing paid) → stays pending.
   assert.equal(
-    deriveStatus(P({ paymentStatus: 'RECONCILIATION_PENDING', allocatedAmount: 500 })),
+    deriveStatus(P({ paymentStatus: 'RECONCILIATION_PENDING', allocatedAmount: 0 })),
     'RECONCILIATION_PENDING'
   );
-  assert.equal(isPayable('RECONCILIATION_PENDING'), false);
+  // Partly paid via allocation → PARTIALLY_PAID.
+  assert.equal(
+    deriveStatus(
+      P({ paymentStatus: 'RECONCILIATION_PENDING', totalCost: 1000, allocatedAmount: 500, hasAllocations: true })
+    ),
+    'PARTIALLY_PAID'
+  );
+  // Fully paid via allocation → PAID.
+  assert.equal(
+    deriveStatus(
+      P({ paymentStatus: 'RECONCILIATION_PENDING', totalCost: 1000, allocatedAmount: 1000, hasAllocations: true })
+    ),
+    'PAID'
+  );
+  // Now eligible for allocation alongside UNPAID / PARTIALLY_PAID; PAID excluded.
+  assert.equal(isPayable('RECONCILIATION_PENDING'), true);
   assert.equal(isPayable('PAID'), false);
   assert.equal(isPayable('UNPAID'), true);
   assert.equal(isPayable('PARTIALLY_PAID'), true);
 });
 
-test('totalPayable: sums remaining over UNPAID/PARTIALLY_PAID; excludes PAID & pending', () => {
+test('totalPayable: sums remaining over UNPAID/PARTIALLY_PAID/RECONCILIATION_PENDING; excludes PAID', () => {
   const total = totalPayable([
     P({ totalCost: 1000, allocatedAmount: 400 }), // remaining 600
     P({ totalCost: 500, allocatedAmount: 0 }), // remaining 500
-    P({ paymentStatus: 'PAID', totalCost: 800, allocatedAmount: 0 }), // excluded
-    P({ paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 0 }), // excluded
+    P({ paymentStatus: 'PAID', totalCost: 800, allocatedAmount: 0 }), // excluded (legacy paid)
+    P({ paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 0 }), // now included: 900
   ]);
-  assert.equal(total, 1100);
+  assert.equal(total, 2000);
 });
 
 // --- allocation validation ---
@@ -133,19 +149,18 @@ test('validate: allocation exceeding a purchase remaining is rejected', () => {
   assert.match(r.error!, /remaining balance/);
 });
 
-test('validate: PAID or RECONCILIATION_PENDING targets are rejected', () => {
+test('validate: PAID targets are rejected; RECONCILIATION_PENDING is now allowed', () => {
   assert.equal(validateAllocations(0, [], targets).ok, false);
   const paid = validateAllocations(100, [{ purchaseId: 'c', amount: 100 }], targets);
-  assert.equal(paid.ok, false);
+  assert.equal(paid.ok, false); // PAID still cannot receive an allocation
   const pend = validateAllocations(100, [{ purchaseId: 'd', amount: 100 }], targets);
-  assert.equal(pend.ok, false);
-  assert.match(pend.error!, /RECONCILIATION_PENDING/);
+  assert.equal(pend.ok, true); // RECONCILIATION_PENDING is part of the debt — eligible
 });
 
 // --- FIFO automatic allocation ---
 
-// Oldest first. RECONCILIATION_PENDING/PAID are excluded by the caller's query,
-// so they never appear in this list.
+// Oldest first. Only PAID is excluded by the caller's query; UNPAID,
+// PARTIALLY_PAID and RECONCILIATION_PENDING purchases can all appear here.
 const fifo = (): FifoPurchase[] => [
   { purchaseId: 'a', remaining: 1000 }, // oldest
   { purchaseId: 'b', remaining: 500 },
@@ -229,14 +244,25 @@ test('planStatusUpdates: groups changed purchases by target status', () => {
   assert.deepEqual(byStatus.PARTIALLY_PAID, ['b']);
 });
 
-test('planStatusUpdates: skips already-correct and RECONCILIATION_PENDING purchases', () => {
+test('planStatusUpdates: skips already-correct and untouched RECONCILIATION_PENDING', () => {
   const plan = planStatusUpdates([
     { id: 'a', paymentStatus: 'PARTIALLY_PAID', totalCost: 1000, allocatedAmount: 400, hasAllocations: true },
     { id: 'b', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 0, hasAllocations: false },
     { id: 'c', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 1000, hasAllocations: true },
-    { id: 'd', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 900, hasAllocations: true },
+    // Untouched pending (nothing allocated) → stays pending, no update.
+    { id: 'd', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 0, hasAllocations: false },
   ]);
   assert.equal(plan.length, 0);
+});
+
+test('planStatusUpdates: an allocated RECONCILIATION_PENDING purchase settles (PARTIALLY_PAID / PAID)', () => {
+  const plan = planStatusUpdates([
+    { id: 'p1', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 900, hasAllocations: true }, // → PAID
+    { id: 'p2', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 300, hasAllocations: true }, // → PARTIALLY_PAID
+  ]);
+  const byStatus = Object.fromEntries(plan.map((u) => [u.status, u.ids.sort()]));
+  assert.deepEqual(byStatus.PAID, ['p1']);
+  assert.deepEqual(byStatus.PARTIALLY_PAID, ['p2']);
 });
 
 test('planStatusUpdates: voiding a FIFO payment reverts its purchases; legacy PAID stays PAID', () => {
@@ -311,20 +337,42 @@ test('cash: LEGACY PAID fallback — PAID purchase with no allocations counts on
   assert.equal(s.payableToYahya, 0);
 });
 
-test('cash: RECONCILIATION_PENDING is separate — not owed, not paid, not in net', () => {
+test('cash: RECONCILIATION_PENDING is part of the debt (Total Purchased − Paid)', () => {
+  // A partial (100 of 600) + a full paid purchase (500) → one 600 transfer.
+  // A 900 reconciliation-pending purchase is untouched (not yet paid).
   const s = combineYahyaCash(
     AGG({
       payableTotalCost: 600,
       payableAllocated: 100,
       paidTotalCost: 500,
       paidAllocated: 500,
-      nonVoidedTransferTotal: 500,
+      nonVoidedTransferTotal: 600, // 100 + 500, the transfers
       reconciliationPendingTotalCost: 900,
     })
   );
-  assert.equal(s.reconciliationPending, 900);
-  assert.equal(s.payableToYahya, 500); // 600 − 100 (pending 900 excluded)
-  assert.equal(s.actualPaidToYahya, 500); // transfer only; pending excluded
+  // Total Purchased = 600 + 500 + 900 = 2000; Paid = 600 → Debt = 1400.
+  assert.equal(s.reconciliationPending, 900); // still surfaced for the badge
+  assert.equal(s.payableToYahya, 1400); // includes the 900 pending until paid
+  assert.equal(s.actualPaidToYahya, 600);
+});
+
+test('cash: production screenshot — Total 101440 − Paid 18690 = Debt 82750', () => {
+  // 64,260 payable (18,690 of it paid via transfers) + 37,180 pending, no legacy
+  // PAID. Total Purchased 101,440; Paid to Yahya 18,690; Yahya Debt 82,750.
+  const s = combineYahyaCash(
+    AGG({
+      payableTotalCost: 64260,
+      payableAllocated: 18690,
+      paidTotalCost: 0,
+      paidAllocated: 0,
+      reconciliationPendingTotalCost: 37180,
+      nonVoidedTransferTotal: 18690,
+    })
+  );
+  const totalPurchased = 64260 + 0 + 37180;
+  assert.equal(totalPurchased, 101440);
+  assert.equal(s.actualPaidToYahya, 18690);
+  assert.equal(s.payableToYahya, 82750); // 101440 − 18690, pending no longer excluded
 });
 
 // --- store-scoped "Paid to Yahya": one transfer split across two stores ---

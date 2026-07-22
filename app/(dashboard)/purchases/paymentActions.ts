@@ -79,10 +79,15 @@ export async function recordYahyaPayment(
   if (!dateStr) return fail('Payment date is required.');
   if (!(amount > 0)) return fail('Payment amount must be greater than zero.');
 
-  // Eligible purchases, oldest first. RECONCILIATION_PENDING/PAID are excluded
-  // by the status filter; remaining is computed from non-voided allocations.
+  // Eligible purchases, oldest first. UNPAID, PARTIALLY_PAID and
+  // RECONCILIATION_PENDING are all part of the debt and can be settled; only
+  // PAID is excluded. Remaining is computed from non-voided allocations, so an
+  // untouched RECONCILIATION_PENDING purchase offers its full totalCost.
   const eligible = await prisma.purchase.findMany({
-    where: { deletedAt: null, paymentStatus: { in: ['UNPAID', 'PARTIALLY_PAID'] } },
+    where: {
+      deletedAt: null,
+      paymentStatus: { in: ['UNPAID', 'PARTIALLY_PAID', 'RECONCILIATION_PENDING'] },
+    },
     orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
     select: {
       id: true,
