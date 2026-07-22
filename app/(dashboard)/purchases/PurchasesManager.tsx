@@ -145,19 +145,16 @@ export function PurchasesManager({
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* The "Payment reconciliation pending" summary card is intentionally
+          hidden from the Purchases page. The underlying RECONCILIATION_PENDING
+          purchases, stock, costs and statuses are unchanged. */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
         <StatCard
           label="Payable to Yahya"
           value={formatMoney(totals.payable)}
           hint="Outstanding balance (unpaid + partially paid)"
           tone={totals.payable > 0 ? 'warning' : 'default'}
-        />
-        <StatCard
-          label="Payment reconciliation pending"
-          value={formatMoney(totals.reconciliationPending)}
-          hint="Not owed or paid"
-          tone={totals.reconciliationPending > 0 ? 'warning' : 'default'}
         />
         <StatCard label="Purchase Records" value={formatNumber(totals.count)} />
       </div>

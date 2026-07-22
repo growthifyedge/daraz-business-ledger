@@ -31,7 +31,7 @@ export function YahyaPayments({
 }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState('');
-  const [state, action] = useActionState(recordYahyaPayment, initialFormState);
+  const [state, action, isPending] = useActionState(recordYahyaPayment, initialFormState);
 
   useEffect(() => {
     if (state.ok) setAmount('');
@@ -114,8 +114,12 @@ export function YahyaPayments({
                         'Auto-allocated FIFO to the oldest unpaid / partially-paid purchases.'
                       )}
                     </span>
-                    <Button type="submit" disabled={!valid}>
-                      <Banknote className="h-4 w-4" /> Record payment
+                    {/* Disable immediately on submit to prevent a duplicate
+                        payment; re-enabled automatically when the request
+                        succeeds or fails (isPending flips back to false). */}
+                    <Button type="submit" disabled={!valid || isPending}>
+                      <Banknote className="h-4 w-4" />{' '}
+                      {isPending ? 'Recording payment…' : 'Record payment'}
                     </Button>
                   </div>
                 </form>
