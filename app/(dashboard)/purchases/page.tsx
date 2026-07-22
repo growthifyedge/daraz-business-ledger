@@ -2,16 +2,11 @@ import { prisma } from '@/lib/prisma';
 import type { Prisma } from '@prisma/client';
 import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
-import { remainingBalance } from '@/lib/yahyaPayments';
 import { getYahyaCashSummary } from '@/lib/calculations';
 import { PurchasesManager } from './PurchasesManager';
 
 export const metadata = { title: 'Purchases' };
 export const dynamic = 'force-dynamic';
-
-const nonVoidedAllocs = {
-  paymentAllocations: { where: { payment: { voided: false } }, select: { amount: true } },
-};
 
 export default async function PurchasesPage({
   searchParams,
@@ -35,20 +30,14 @@ export default async function PurchasesPage({
       include: {
         product: { select: { name: true } },
         store: { select: { name: true } },
-        ...nonVoidedAllocs,
       },
     }),
     prisma.purchase.count({ where }),
     prisma.purchase.aggregate({ where, _sum: { totalCost: true } }),
     // Single shared source — same numbers as Cash Flow, Dashboard and reports.
     getYahyaCashSummary(),
-    prisma.yahyaPayment.findMany({
-      orderBy: { date: 'desc' },
-      take: 50,
-      include: {
-        allocations: { include: { purchase: { select: { product: { select: { name: true } } } } } },
-      },
-    }),
+    // Payment-level fields only — FIFO allocations are internal, never surfaced.
+    prisma.yahyaPayment.findMany({ orderBy: { date: 'desc' }, take: 50 }),
     prisma.product.findMany({
       where: { deletedAt: null, active: true },
       orderBy: { name: 'asc' },
@@ -60,9 +49,6 @@ export default async function PurchasesPage({
       select: { id: true, name: true },
     }),
   ]);
-
-  const allocated = (p: { paymentAllocations: { amount: number }[] }) =>
-    p.paymentAllocations.reduce((s, a) => s + a.amount, 0);
 
   const rows = purchases.map((p) => ({
     id: p.id,
@@ -76,11 +62,6 @@ export default async function PurchasesPage({
     unitCost: p.unitCost,
     totalCost: p.totalCost,
     paymentStatus: p.paymentStatus,
-    remaining: remainingBalance({
-      paymentStatus: p.paymentStatus,
-      totalCost: p.totalCost,
-      allocatedAmount: allocated(p),
-    }),
     reimbursementDate: p.reimbursementDate?.toISOString() ?? null,
     bankReference: p.bankReference,
     invoiceUrl: p.invoiceUrl,
@@ -95,10 +76,6 @@ export default async function PurchasesPage({
     bankReference: pay.bankReference,
     notes: pay.notes,
     voided: pay.voided,
-    allocations: pay.allocations.map((a) => ({
-      productName: a.purchase.product.name,
-      amount: a.amount,
-    })),
   }));
 
   return (

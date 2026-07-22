@@ -17,7 +17,6 @@ export interface PaymentRecord {
   bankReference: string | null;
   notes: string | null;
   voided: boolean;
-  allocations: { productName: string; amount: number }[];
 }
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -135,7 +134,6 @@ export function YahyaPayments({
                           <TH>Date</TH>
                           <TH align="right">Amount</TH>
                           <TH>Reference</TH>
-                          <TH>Auto-allocated to</TH>
                           <TH align="center">Status</TH>
                           <TH align="right">Action</TH>
                         </TRow>
@@ -146,9 +144,6 @@ export function YahyaPayments({
                             <TD>{formatDate(pay.date)}</TD>
                             <TD align="right" className="font-medium">{formatMoney(pay.amount)}</TD>
                             <TD className="text-xs text-slate-500">{pay.bankReference || '—'}</TD>
-                            <TD className="max-w-[260px] text-xs text-slate-500">
-                              {pay.allocations.map((a) => `${a.productName} (${formatMoney(a.amount)})`).join(', ')}
-                            </TD>
                             <TD align="center">
                               {pay.voided ? <Badge tone="slate">Voided</Badge> : <Badge tone="green">Active</Badge>}
                             </TD>
