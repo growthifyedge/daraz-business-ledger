@@ -56,6 +56,38 @@ export function isPayable(status: PaymentStatus): boolean {
   return status === 'UNPAID' || status === 'PARTIALLY_PAID';
 }
 
+export interface PurchaseStatusRow {
+  id: string;
+  paymentStatus: PaymentStatus;
+  totalCost: number;
+  /** Σ non-voided allocation amounts for this purchase. */
+  allocatedAmount: number;
+}
+
+/**
+ * Plan the minimal set of status updates for a batch of purchases: group the
+ * purchases whose derived status changed by their target status. Purchases that
+ * are RECONCILIATION_PENDING or already correct are skipped. Pure — the action
+ * turns each group into a single `updateMany`, so the recompute costs a constant
+ * number of round-trips instead of two per purchase.
+ */
+export function planStatusUpdates(rows: PurchaseStatusRow[]): { status: PaymentStatus; ids: string[] }[] {
+  const byTarget = new Map<PaymentStatus, string[]>();
+  for (const p of rows) {
+    if (p.paymentStatus === 'RECONCILIATION_PENDING') continue;
+    const next = deriveStatus({
+      paymentStatus: p.paymentStatus,
+      totalCost: p.totalCost,
+      allocatedAmount: p.allocatedAmount,
+    });
+    if (next === p.paymentStatus) continue;
+    const arr = byTarget.get(next) ?? [];
+    arr.push(p.id);
+    byTarget.set(next, arr);
+  }
+  return [...byTarget.entries()].map(([status, ids]) => ({ status, ids }));
+}
+
 /** Total still owed to Yahya across all payable purchases. */
 export function totalPayable(purchases: PurchasePaidInput[]): number {
   return round2(

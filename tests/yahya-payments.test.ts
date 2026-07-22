@@ -12,6 +12,7 @@ import {
   validateAllocations,
   combineYahyaCash,
   allocateFifo,
+  planStatusUpdates,
   round2,
   transferPaidForScope,
   type FifoPurchase,
@@ -199,6 +200,42 @@ test('fifo: fractional amounts stay balanced to the payment (no rounding drift)'
     { purchaseId: 'b', amount: 133.33 },
   ]);
   assert.equal(round2(r.allocations.reduce((s, a) => s + a.amount, 0)), 333.33);
+});
+
+// --- bulk status recompute planning ---
+
+test('planStatusUpdates: groups changed purchases by target status', () => {
+  const plan = planStatusUpdates([
+    { id: 'a', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 1000 }, // → PAID
+    { id: 'b', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 400 }, // → PARTIALLY_PAID
+    { id: 'c', paymentStatus: 'PARTIALLY_PAID', totalCost: 500, allocatedAmount: 500 }, // → PAID
+  ]);
+  const byStatus = Object.fromEntries(plan.map((u) => [u.status, u.ids.sort()]));
+  assert.deepEqual(byStatus.PAID, ['a', 'c']);
+  assert.deepEqual(byStatus.PARTIALLY_PAID, ['b']);
+});
+
+test('planStatusUpdates: skips already-correct and RECONCILIATION_PENDING purchases', () => {
+  const plan = planStatusUpdates([
+    { id: 'a', paymentStatus: 'PARTIALLY_PAID', totalCost: 1000, allocatedAmount: 400 }, // unchanged
+    { id: 'b', paymentStatus: 'UNPAID', totalCost: 1000, allocatedAmount: 0 }, // unchanged
+    { id: 'c', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 1000 }, // unchanged
+    { id: 'd', paymentStatus: 'RECONCILIATION_PENDING', totalCost: 900, allocatedAmount: 900 }, // never touched
+  ]);
+  assert.equal(plan.length, 0);
+});
+
+test('planStatusUpdates: after void, a partly-allocated purchase → PARTIALLY_PAID (preserves deriveStatus behavior)', () => {
+  const plan = planStatusUpdates([
+    // A fully-PAID purchase with 0 non-voided allocations keeps PAID via the
+    // legacy fallback — deriveStatus can't distinguish it from a historical
+    // legacy-paid row. (Unchanged from the previous per-purchase recompute.)
+    { id: 'a', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 0 },
+    { id: 'b', paymentStatus: 'PAID', totalCost: 1000, allocatedAmount: 300 }, // → PARTIALLY_PAID
+  ]);
+  const byStatus = Object.fromEntries(plan.map((u) => [u.status, u.ids]));
+  assert.equal(byStatus.UNPAID, undefined); // 'a' stays PAID (legacy fallback)
+  assert.deepEqual(byStatus.PARTIALLY_PAID, ['b']);
 });
 
 // --- shared cash summary (combineYahyaCash): one source, no double-count ---
