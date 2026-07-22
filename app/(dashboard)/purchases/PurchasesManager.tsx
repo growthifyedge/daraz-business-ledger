@@ -5,7 +5,7 @@ import { Plus, Pencil, ShoppingCart, FileText } from 'lucide-react';
 import type { PaymentStatus } from '@prisma/client';
 import { savePurchase, deletePurchase } from './actions';
 import { BulkPurchaseUpload } from './BulkPurchaseUpload';
-import { YahyaPayments, type PayablePurchase, type PaymentRecord } from './YahyaPayments';
+import { YahyaPayments, type PaymentRecord } from './YahyaPayments';
 import { initialFormState } from '@/lib/formState';
 import { Button, SubmitButton } from '@/components/Button';
 import { Modal } from '@/components/Modal';
@@ -63,7 +63,6 @@ export function PurchasesManager({
   products,
   stores,
   totals,
-  payablePurchases,
   payments,
   meta,
 }: {
@@ -71,7 +70,6 @@ export function PurchasesManager({
   products: Opt[];
   stores: Opt[];
   totals: { total: number; payable: number; reconciliationPending: number; count: number };
-  payablePurchases: PayablePurchase[];
   payments: PaymentRecord[];
   meta: PageMeta;
 }) {
@@ -140,7 +138,7 @@ export function PurchasesManager({
             rows={exportRows}
           />
           <BulkPurchaseUpload />
-          <YahyaPayments payablePurchases={payablePurchases} payments={payments} />
+          <YahyaPayments payableTotal={totals.payable} payments={payments} />
           <Button onClick={openNew}>
             <Plus className="h-4 w-4" /> New Purchase
           </Button>

@@ -8,11 +8,10 @@ import { logAudit } from '@/lib/audit';
 import { str, num } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
 import {
-  validateAllocations,
+  allocateFifo,
   deriveStatus,
   round2,
-  type AllocationInput,
-  type AllocationTarget,
+  type FifoPurchase,
 } from '@/lib/yahyaPayments';
 
 type Tx = Prisma.TransactionClient;
@@ -46,22 +45,15 @@ async function recomputePurchaseStatuses(tx: Tx, purchaseIds: string[]) {
   }
 }
 
-function parseAllocations(raw: string): AllocationInput[] | null {
-  try {
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return null;
-    return arr.map((a) => ({ purchaseId: String(a.purchaseId), amount: round2(Number(a.amount)) }));
-  } catch {
-    return null;
-  }
-}
 
 /**
- * Record one real bank transfer to Yahya and allocate it across one or more
- * UNPAID / PARTIALLY_PAID purchases. The payment MUST be fully allocated
- * (Σ allocations == amount). Atomic: payment + allocations + status recompute
- * all commit together, or nothing does. RECONCILIATION_PENDING and PAID
- * purchases can never be targeted.
+ * Record one real bank transfer to Yahya. The user enters only the payment
+ * details (date, amount, bank, reference, notes); the amount is allocated
+ * automatically FIFO across the oldest eligible UNPAID / PARTIALLY_PAID
+ * purchases in the background — no purchase selection. A payment greater than
+ * the total payable is rejected. RECONCILIATION_PENDING and PAID purchases are
+ * never allocated. Atomic: payment + allocations + status recompute commit
+ * together, or nothing does. Payment and its automatic allocations are audited.
  */
 export async function recordYahyaPayment(
   _prev: FormState,
@@ -74,34 +66,37 @@ export async function recordYahyaPayment(
   const bankAccount = str(formData.get('bankAccount'));
   const bankReference = str(formData.get('bankReference'));
   const notes = str(formData.get('notes'));
-  const allocations = parseAllocations(str(formData.get('allocations')) ?? '[]');
 
   if (!dateStr) return fail('Payment date is required.');
   if (!(amount > 0)) return fail('Payment amount must be greater than zero.');
-  if (!allocations) return fail('Could not read the allocations.');
 
-  // Load the targeted purchases and their CURRENT remaining balances.
-  const ids = allocations.map((a) => a.purchaseId);
-  const purchases = await prisma.purchase.findMany({
-    where: { id: { in: ids }, deletedAt: null },
+  // Eligible purchases, oldest first. RECONCILIATION_PENDING/PAID are excluded
+  // by the status filter; remaining is computed from non-voided allocations.
+  const eligible = await prisma.purchase.findMany({
+    where: { deletedAt: null, paymentStatus: { in: ['UNPAID', 'PARTIALLY_PAID'] } },
+    orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
     select: {
       id: true,
       totalCost: true,
-      paymentStatus: true,
       paymentAllocations: { where: { payment: { voided: false } }, select: { amount: true } },
     },
   });
-  const targets: AllocationTarget[] = purchases.map((p) => {
-    const allocated = p.paymentAllocations.reduce((s, a) => s + a.amount, 0);
-    return {
+  const fifoPurchases: FifoPurchase[] = eligible
+    .map((p) => ({
       purchaseId: p.id,
-      status: p.paymentStatus,
-      remaining: round2(Math.max(0, p.totalCost - (allocated > 0 ? allocated : p.paymentStatus === 'PAID' ? p.totalCost : 0))),
-    };
-  });
+      remaining: round2(Math.max(0, p.totalCost - p.paymentAllocations.reduce((s, a) => s + a.amount, 0))),
+    }))
+    .filter((p) => p.remaining > 0);
 
-  const v = validateAllocations(amount, allocations, targets);
-  if (!v.ok) return fail(v.error!);
+  const fifo = allocateFifo(amount, fifoPurchases);
+  if (!fifo.ok) return fail(fifo.error!);
+
+  // Defence in depth: the exact-allocation invariant must hold before writing.
+  const allocTotal = round2(fifo.allocations.reduce((s, a) => s + a.amount, 0));
+  if (allocTotal !== amount || fifo.allocations.length === 0) {
+    return fail('Automatic allocation failed to balance — nothing was written.');
+  }
+  const ids = fifo.allocations.map((a) => a.purchaseId);
 
   try {
     const paymentId = await prisma.$transaction(async (tx) => {
@@ -117,7 +112,7 @@ export async function recordYahyaPayment(
         },
       });
       await tx.yahyaPaymentAllocation.createMany({
-        data: allocations.map((a) => ({
+        data: fifo.allocations.map((a) => ({
           paymentId: payment.id,
           purchaseId: a.purchaseId,
           amount: a.amount,
@@ -136,12 +131,13 @@ export async function recordYahyaPayment(
         date: dateStr,
         amount,
         bankReference: bankReference || null,
-        allocations: allocations.map((a) => ({ purchaseId: a.purchaseId, amount: a.amount })),
+        method: 'FIFO-auto',
+        allocations: fifo.allocations.map((a) => ({ purchaseId: a.purchaseId, amount: a.amount })),
         affectedPurchaseIds: ids,
       },
     });
     revalidatePath('/purchases');
-    return ok('Payment recorded and allocated.');
+    return ok('Payment recorded and auto-allocated (FIFO).');
   } catch {
     return fail('Could not record the payment — nothing was written.');
   }

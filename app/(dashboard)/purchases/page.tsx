@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma';
-import type { Prisma, PaymentStatus } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
 import { remainingBalance } from '@/lib/yahyaPayments';
@@ -9,7 +9,6 @@ import { PurchasesManager } from './PurchasesManager';
 export const metadata = { title: 'Purchases' };
 export const dynamic = 'force-dynamic';
 
-const PAYABLE: PaymentStatus[] = ['UNPAID', 'PARTIALLY_PAID'];
 const nonVoidedAllocs = {
   paymentAllocations: { where: { payment: { voided: false } }, select: { amount: true } },
 };
@@ -27,16 +26,7 @@ export default async function PurchasesPage({
     ...searchFilter(q, ['product.name', 'bankReference', 'notes', 'purchasedBy']),
   };
 
-  const [
-    purchases,
-    count,
-    totalAgg,
-    yahya,
-    payablePurchasesRaw,
-    paymentsRaw,
-    products,
-    stores,
-  ] = await Promise.all([
+  const [purchases, count, totalAgg, yahya, paymentsRaw, products, stores] = await Promise.all([
     prisma.purchase.findMany({
       where,
       orderBy: { date: 'desc' },
@@ -52,16 +42,6 @@ export default async function PurchasesPage({
     prisma.purchase.aggregate({ where, _sum: { totalCost: true } }),
     // Single shared source — same numbers as Cash Flow, Dashboard and reports.
     getYahyaCashSummary(),
-    prisma.purchase.findMany({
-      where: { deletedAt: null, paymentStatus: { in: PAYABLE } },
-      orderBy: { date: 'asc' },
-      take: 300,
-      include: {
-        product: { select: { name: true } },
-        store: { select: { name: true } },
-        ...nonVoidedAllocs,
-      },
-    }),
     prisma.yahyaPayment.findMany({
       orderBy: { date: 'desc' },
       take: 50,
@@ -107,20 +87,6 @@ export default async function PurchasesPage({
     notes: p.notes,
   }));
 
-  const payablePurchases = payablePurchasesRaw
-    .map((p) => ({
-      id: p.id,
-      label: `${p.product.name}${p.store?.name ? ` · ${p.store.name}` : ''} · ${p.date
-        .toISOString()
-        .slice(0, 10)}${p.bankReference ? ` · ${p.bankReference}` : ''}`,
-      remaining: remainingBalance({
-        paymentStatus: p.paymentStatus,
-        totalCost: p.totalCost,
-        allocatedAmount: allocated(p),
-      }),
-    }))
-    .filter((p) => p.remaining > 0);
-
   const payments = paymentsRaw.map((pay) => ({
     id: pay.id,
     date: pay.date.toISOString(),
@@ -146,7 +112,6 @@ export default async function PurchasesPage({
         reconciliationPending: yahya.reconciliationPending,
         count,
       }}
-      payablePurchases={payablePurchases}
       payments={payments}
       meta={buildPageMeta({ page, pageSize, skip, take, q }, count)}
     />
