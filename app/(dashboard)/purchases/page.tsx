@@ -86,6 +86,7 @@ export default async function PurchasesPage({
       totals={{
         total: totalAgg._sum?.totalCost ?? 0,
         payable: yahya.payableToYahya,
+        paid: yahya.actualPaidToYahya,
         reconciliationPending: yahya.reconciliationPending,
         count,
       }}

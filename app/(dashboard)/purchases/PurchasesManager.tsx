@@ -67,7 +67,7 @@ export function PurchasesManager({
   purchases: PurchaseRow[];
   products: Opt[];
   stores: Opt[];
-  totals: { total: number; payable: number; reconciliationPending: number; count: number };
+  totals: { total: number; payable: number; paid: number; reconciliationPending: number; count: number };
   payments: PaymentRecord[];
   meta: PageMeta;
 }) {
@@ -141,12 +141,13 @@ export function PurchasesManager({
         </div>
       </div>
 
-      {/* Purchases page shows purchase records only. All payment figures —
-          Payable to Yahya, record payment, recent payments and void — live in
-          the Payments dialog. Payment status / balances are not shown per row. */}
-      <div className="mb-4 grid grid-cols-2 gap-3">
+      {/* Three summary cards only. Per-row payment status / balances stay
+          hidden; recording, void and per-payment detail live in the Payments
+          dialog. "Payment Reconciliation Pending" is intentionally not shown. */}
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
-        <StatCard label="Purchase Records" value={formatNumber(totals.count)} />
+        <StatCard label="Yahya Debt" value={formatMoney(totals.payable)} />
+        <StatCard label="Paid to Yahya" value={formatMoney(totals.paid)} />
       </div>
 
       <div className="mb-3">
