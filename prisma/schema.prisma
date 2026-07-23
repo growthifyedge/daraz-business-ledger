@@ -700,20 +700,23 @@ model DarazIncomeFee {
 /// imports. Never auto-guessed from names — an operator sets it explicitly.
 model DarazSkuMapping {
   id          String   @id @default(cuid())
-  sellerSku   String   @unique
+  sellerSku   String
   productId   String
   product     Product  @relation(fields: [productId], references: [id])
-  // Phase 1 (additive, nullable): store attribution for the mapping. The global
-  // `sellerSku @unique` rule is intentionally unchanged for now — per-store
-  // uniqueness and backfill are deferred to a later phase.
-  storeId     String?
-  store       Store?   @relation(fields: [storeId], references: [id])
+  // Phase 2: the mapping is store-scoped. A Seller SKU is unique PER STORE
+  // (@@unique([storeId, sellerSku])), not globally — the same SKU may be mapped
+  // by both stores. storeId is required; deleting a Store with mappings is
+  // blocked (onDelete: Restrict). The store label lives only on the mapping,
+  // never on the shared Product.
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
   createdById String?
   createdBy   String?
   note        String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@unique([storeId, sellerSku])
   @@index([productId])
   @@index([storeId])
 }
