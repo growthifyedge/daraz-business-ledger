@@ -37,7 +37,9 @@ export default async function PurchasesPage({
     // Single shared source — same numbers as Cash Flow, Dashboard and reports.
     getYahyaCashSummary(),
     // Payment-level fields only — FIFO allocations are internal, never surfaced.
-    prisma.yahyaPayment.findMany({ orderBy: { date: 'desc' }, take: 50 }),
+    // Only active payments reach the owner view. Removed (voided) payments are
+    // kept in the DB with an AuditLog trail but never listed in Payment History.
+    prisma.yahyaPayment.findMany({ where: { voided: false }, orderBy: { date: 'desc' }, take: 50 }),
     prisma.product.findMany({
       where: { deletedAt: null, active: true },
       orderBy: { name: 'asc' },

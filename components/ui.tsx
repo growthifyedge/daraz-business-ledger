@@ -1,5 +1,11 @@
 import { cn } from '@/lib/utils';
-import type { ReactNode, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import type {
+  ReactNode,
+  KeyboardEvent as ReactKeyboardEvent,
+  InputHTMLAttributes,
+  SelectHTMLAttributes,
+  TextareaHTMLAttributes,
+} from 'react';
 
 // ---------------------------------------------------------------------------
 // Layout / containers
@@ -8,16 +14,35 @@ import type { ReactNode, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTML
 export function Card({
   children,
   className,
+  onClick,
 }: {
   children: ReactNode;
   className?: string;
+  /** When provided, the card becomes an accessible button (click + Enter/Space). */
+  onClick?: () => void;
 }) {
+  const interactive = !!onClick;
   return (
     <div
       className={cn(
         'rounded-xl border border-slate-200 bg-white shadow-card',
+        interactive &&
+          'cursor-pointer transition hover:border-brand-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500',
         className
       )}
+      {...(interactive
+        ? {
+            role: 'button',
+            tabIndex: 0,
+            onClick,
+            onKeyDown: (e: ReactKeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            },
+          }
+        : {})}
     >
       {children}
     </div>
@@ -90,12 +115,15 @@ export function StatCard({
   hint,
   icon,
   tone = 'default',
+  onClick,
 }: {
   label: string;
   value: ReactNode;
   hint?: ReactNode;
   icon?: ReactNode;
   tone?: 'default' | 'positive' | 'negative' | 'brand' | 'warning';
+  /** When set, the whole card is clickable (e.g. to open a detail view). */
+  onClick?: () => void;
 }) {
   const tones: Record<string, string> = {
     default: 'text-slate-900',
@@ -105,7 +133,7 @@ export function StatCard({
     warning: 'text-amber-600',
   };
   return (
-    <Card className="p-4">
+    <Card className="p-4" onClick={onClick}>
       <div className="flex items-start justify-between">
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
           {label}
