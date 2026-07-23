@@ -64,12 +64,19 @@ interface CommitSummary {
   reconDiff: number;
 }
 
+interface StoreOpt {
+  id: string;
+  name: string;
+}
+
 export function ImportManager({
   products,
+  stores,
   piiKeyReady,
   hasCommittedImport,
 }: {
   products: ProductOpt[];
+  stores: StoreOpt[];
   piiKeyReady: boolean;
   hasCommittedImport: boolean;
 }) {
@@ -87,11 +94,25 @@ export function ImportManager({
   const [mapped, setMapped] = useState<Record<string, string>>({});
   const [savingSku, setSavingSku] = useState<string | null>(null);
   const [mapError, setMapError] = useState<Record<string, string>>({});
+  // Store these mappings belong to. Required, no default — the operator picks it.
+  const [storeId, setStoreId] = useState('');
 
   const r = preview?.result;
 
+  // Mappings are per store, so a store change invalidates this session's saved
+  // state (a SKU saved for one store is not "mapped" for another).
+  function changeStore(next: string) {
+    setStoreId(next);
+    setMapped({});
+    setMapError({});
+  }
+
   function saveMapping(sellerSku: string) {
     const productId = picks[sellerSku];
+    if (!storeId) {
+      setMapError((m) => ({ ...m, [sellerSku]: 'Select a store first.' }));
+      return;
+    }
     if (!productId) {
       setMapError((m) => ({ ...m, [sellerSku]: 'Choose a ledger product first.' }));
       return;
@@ -100,7 +121,7 @@ export function ImportManager({
     setMapError((m) => ({ ...m, [sellerSku]: '' }));
     (async () => {
       try {
-        const res = await saveDarazSkuMapping(sellerSku, productId);
+        const res = await saveDarazSkuMapping(sellerSku, productId, storeId);
         if (res.ok) {
           setMapped((m) => ({ ...m, [sellerSku]: productId }));
         } else {
@@ -367,9 +388,35 @@ export function ImportManager({
               <Card className="mb-4">
                 <CardHeader
                   title={`Unresolved Seller SKUs (${remaining.length})`}
-                  subtitle="Map each Seller SKU to a ledger product. Mappings persist and apply on the next dry-run/import — this does not change stock, sales, COGS or P&L now. Multiple SKUs/variants may map to the same product."
+                  subtitle="Map each Seller SKU to a ledger product for the selected store. Mappings persist and apply on the next dry-run/import — this does not change stock, sales, COGS or P&L now. Multiple SKUs/variants may map to the same product."
+                  action={
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="mapping-store" className="text-xs font-medium text-slate-500">
+                        Store <span className="text-rose-500">*</span>
+                      </label>
+                      <Select
+                        id="mapping-store"
+                        value={storeId}
+                        onChange={(e) => changeStore(e.target.value)}
+                        className="min-w-[180px]"
+                      >
+                        <option value="">— select store —</option>
+                        {stores.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  }
                 />
                 <CardBody className="p-0">
+                  {!storeId && r.unresolvedSkuList.length > 0 && (
+                    <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+                      Select the store these mappings belong to before saving. The same Seller SKU can
+                      be mapped separately for each store.
+                    </div>
+                  )}
                   {r.unresolvedSkuList.length === 0 ? (
                     <div className="p-5 text-sm text-emerald-600">All Seller SKUs resolve to a ledger product.</div>
                   ) : products.length === 0 ? (
@@ -437,7 +484,8 @@ export function ImportManager({
                                     <Button
                                       size="sm"
                                       onClick={() => saveMapping(u.sellerSku)}
-                                      disabled={savingSku === u.sellerSku || !picks[u.sellerSku]}
+                                      disabled={savingSku === u.sellerSku || !picks[u.sellerSku] || !storeId}
+                                      title={!storeId ? 'Select a store first' : undefined}
                                     >
                                       {savingSku === u.sellerSku ? 'Saving…' : 'Save'}
                                     </Button>
