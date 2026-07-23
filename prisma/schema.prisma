@@ -123,13 +123,14 @@ model Store {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // soft delete
 
-  products    ProductStore[]
-  purchases   Purchase[]
-  sales       Sale[]
-  expenses    Expense[]
-  settlements Settlement[]
-  movements   StockMovement[]
-  returns     Return[]
+  products         ProductStore[]
+  purchases        Purchase[]
+  sales            Sale[]
+  expenses         Expense[]
+  settlements      Settlement[]
+  movements        StockMovement[]
+  returns          Return[]
+  darazSkuMappings DarazSkuMapping[]
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +703,11 @@ model DarazSkuMapping {
   sellerSku   String   @unique
   productId   String
   product     Product  @relation(fields: [productId], references: [id])
+  // Phase 1 (additive, nullable): store attribution for the mapping. The global
+  // `sellerSku @unique` rule is intentionally unchanged for now — per-store
+  // uniqueness and backfill are deferred to a later phase.
+  storeId     String?
+  store       Store?   @relation(fields: [storeId], references: [id])
   createdById String?
   createdBy   String?
   note        String?
@@ -709,4 +715,5 @@ model DarazSkuMapping {
   updatedAt   DateTime @updatedAt
 
   @@index([productId])
+  @@index([storeId])
 }
