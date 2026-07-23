@@ -1,11 +1,11 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
-import { Plus, Pencil, ShoppingCart, FileText } from 'lucide-react';
+import { Plus, Pencil, ShoppingCart, FileText, Banknote } from 'lucide-react';
 import type { PaymentStatus } from '@prisma/client';
 import { savePurchase, deletePurchase } from './actions';
 import { BulkPurchaseUpload } from './BulkPurchaseUpload';
-import { YahyaPayments, type PaymentRecord } from './YahyaPayments';
+import { YahyaPayments, type PaymentRecord, type PaymentView } from './YahyaPayments';
 import { initialFormState } from '@/lib/formState';
 import { Button, SubmitButton } from '@/components/Button';
 import { Modal } from '@/components/Modal';
@@ -73,6 +73,9 @@ export function PurchasesManager({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<PurchaseRow | null>(null);
+  // Which Yahya payment dialog is open: 'record' (top button) or 'history'
+  // (clicking the Paid to Yahya card). null = closed.
+  const [paymentView, setPaymentView] = useState<PaymentView>(null);
   // The manual New Purchase form does not offer PARTIALLY_PAID (that is derived
   // from Yahya payment allocations, never set by hand).
   const [status, setStatus] = useState<NewPurchaseStatus>('UNPAID');
@@ -134,7 +137,10 @@ export function PurchasesManager({
             rows={exportRows}
           />
           <BulkPurchaseUpload />
-          <YahyaPayments payableTotal={totals.payable} payments={payments} />
+          {/* Top Payments button opens only "Record New Payment". */}
+          <Button variant="outline" onClick={() => setPaymentView('record')}>
+            <Banknote className="h-4 w-4" /> Payments
+          </Button>
           <Button onClick={openNew}>
             <Plus className="h-4 w-4" /> New Purchase
           </Button>
@@ -142,13 +148,26 @@ export function PurchasesManager({
       </div>
 
       {/* Three summary cards only. Per-row payment status / balances stay
-          hidden; recording, void and per-payment detail live in the Payments
-          dialog. "Payment Reconciliation Pending" is intentionally not shown. */}
+          hidden. The Paid to Yahya card opens Payment History; recording and
+          removing payments live there. "Payment Reconciliation Pending" is
+          intentionally not shown. */}
       <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Total Purchased" value={formatMoney(totals.total)} />
         <StatCard label="Yahya Debt" value={formatMoney(totals.payable)} />
-        <StatCard label="Paid to Yahya" value={formatMoney(totals.paid)} />
+        <StatCard
+          label="Paid to Yahya"
+          value={formatMoney(totals.paid)}
+          hint="View payment history →"
+          onClick={() => setPaymentView('history')}
+        />
       </div>
+
+      <YahyaPayments
+        view={paymentView}
+        onChangeView={setPaymentView}
+        payableTotal={totals.payable}
+        payments={payments}
+      />
 
       <div className="mb-3">
         <SearchBar placeholder="Search product, bank ref, notes…" />
