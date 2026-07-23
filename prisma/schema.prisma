@@ -123,14 +123,17 @@ model Store {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // soft delete
 
-  products         ProductStore[]
-  purchases        Purchase[]
-  sales            Sale[]
-  expenses         Expense[]
-  settlements      Settlement[]
-  movements        StockMovement[]
-  returns          Return[]
-  darazSkuMappings DarazSkuMapping[]
+  products           ProductStore[]
+  purchases          Purchase[]
+  sales              Sale[]
+  expenses           Expense[]
+  settlements        Settlement[]
+  movements          StockMovement[]
+  returns            Return[]
+  darazSkuMappings   DarazSkuMapping[]
+  darazImportBatches DarazImportBatch[]
+  darazOrderItems    DarazOrderItem[]
+  darazIncomeLines   DarazIncomeLine[]
 }
 
 // ---------------------------------------------------------------------------
@@ -558,11 +561,16 @@ model DarazImportBatch {
   createdById          String?
   createdBy            String?
   createdAt            DateTime          @default(now())
+  // Phase 3 (additive, nullable): the store this import belongs to. Backfill and
+  // NOT NULL enforcement are deferred; nothing reads it yet.
+  storeId              String?
+  store                Store?            @relation(fields: [storeId], references: [id])
 
   orderItems  DarazOrderItem[]
   incomeLines DarazIncomeLine[]
 
   @@index([createdAt])
+  @@index([storeId])
 }
 
 /// Confidential customer identity. OWNER/ADMIN access only; phone and
@@ -630,6 +638,9 @@ model DarazOrderItem {
   product       Product?          @relation(fields: [productId], references: [id])
   importBatchId String?
   importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
+  // Phase 3 (additive, nullable): store attribution. Backfill + NOT NULL deferred.
+  storeId       String?
+  store         Store?            @relation(fields: [storeId], references: [id])
   // One order item can appear in MORE THAN ONE weekly statement (e.g. a returned
   // item settled across two statements), so this is one-to-many, not one-to-one.
   incomeLines   DarazIncomeLine[]
@@ -640,6 +651,7 @@ model DarazOrderItem {
   @@index([sellerSku])
   @@index([customerId])
   @@index([productId])
+  @@index([storeId])
 }
 
 /// One income line per (orderItemId, statementNumber) — a statement-specific
@@ -669,6 +681,10 @@ model DarazIncomeLine {
   orderItem     DarazOrderItem    @relation(fields: [orderItemId], references: [orderItemId])
   importBatchId String?
   importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
+  // Phase 3 (additive, nullable): store attribution. Fees inherit the store
+  // through this line (no storeId on DarazIncomeFee). Backfill + NOT NULL deferred.
+  storeId       String?
+  store         Store?            @relation(fields: [storeId], references: [id])
   fees          DarazIncomeFee[]
 
   createdAt DateTime @default(now())
@@ -677,6 +693,7 @@ model DarazIncomeLine {
   @@index([orderNumber])
   @@index([statementNumber])
   @@index([sellerSku])
+  @@index([storeId])
 }
 
 /// Every original Daraz fee row, preserved verbatim (label + amount + VAT),
