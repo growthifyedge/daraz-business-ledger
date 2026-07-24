@@ -30,6 +30,8 @@ export async function readUpload(req: Request): Promise<ParsedUpload> {
   }
   const ordersFile = form.get('ordersFile');
   const incomeFile = form.get('incomeFile');
+  const storeId = String(form.get('storeId') ?? '').trim();
+  if (!storeId) throw new HttpError(400, 'Select a store before uploading.');
   try {
     validateUpload(ordersFile, 'orders');
     validateUpload(incomeFile, 'income');
@@ -45,7 +47,7 @@ export async function readUpload(req: Request): Promise<ParsedUpload> {
   const ordersBuf = Buffer.from(await ordersFile.arrayBuffer());
   const incomeText = new TextDecoder('utf-8').decode(await incomeFile.arrayBuffer());
   try {
-    return await parseUpload(ordersBuf, ordersFile.name, incomeText, incomeFile.name);
+    return await parseUpload(ordersBuf, ordersFile.name, incomeText, incomeFile.name, storeId);
   } catch (e) {
     if (e instanceof UploadError) throw new HttpError(422, e.message);
     throw new HttpError(422, 'Could not parse the uploaded files. Check they are the verified Daraz exports.');

@@ -1,26 +1,24 @@
-// Server-only. Turns two uploaded buffers into a dry-run preview and, on
-// commit, writes ONE atomic, idempotent import transaction. Customer PII is
-// encrypted before it ever reaches the database; no PII is logged or audited.
+// Server-only. Turns the two uploaded files into a store-scoped dry-run and, on
+// commit, writes ONE atomic transaction. Phase 4: NO customer/PII is ever read,
+// stored, encrypted, logged, audited or committed — the Orders file is a
+// sanitized, identifier-only dataset. Every batch / order line / income line is
+// tagged with the selected store. Posts NO Sale / StockMovement / stock / COGS /
+// P&L. Order lines are idempotent by Order Line ID (re-upload updates in place).
 
 import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { logAudit } from '@/lib/audit';
 import type { SessionUser } from '@/lib/auth';
-import {
-  parseIncomeCsv,
-  buildIncomeLines,
-  normaliseOrderRows,
-  parseDarazDate,
-  type IncomeLine,
-  type OrderItemRecord,
-} from './parse';
+import { parseIncomeCsv, buildIncomeLines, parseDarazDate, type IncomeLine } from './parse';
+import { normaliseSanitizedOrderRows, type SanitizedOrderRecord } from './sanitize';
 import { computeDryRun, dupKey, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
 import { readOrdersWorkbook } from './xlsx';
-import { encryptPii, blindIndex, piiKeyConfigured } from './crypto';
 
 export interface ParsedUpload {
-  orders: OrderItemRecord[];
+  storeId: string;
+  orders: SanitizedOrderRecord[];
   incomeLines: IncomeLine[];
   ordersHash: string;
   incomeHash: string;
@@ -30,24 +28,27 @@ export interface ParsedUpload {
   incomeFileName: string;
 }
 
-/** Parse both uploaded buffers into typed records + idempotency fingerprint. */
+/** Parse both uploaded files into typed records + a store-scoped idempotency
+ *  fingerprint. Orders are the sanitized, PII-free dataset. */
 export async function parseUpload(
   ordersBuf: Buffer,
   ordersFileName: string,
   incomeText: string,
-  incomeFileName: string
+  incomeFileName: string,
+  storeId: string
 ): Promise<ParsedUpload> {
-  const orders = normaliseOrderRows(await readOrdersWorkbook(ordersBuf));
+  const orders = normaliseSanitizedOrderRows(await readOrdersWorkbook(ordersBuf));
   const incomeFeeRows = parseIncomeCsv(incomeText);
   const incomeLines = buildIncomeLines(incomeFeeRows);
   const ordersHash = sha256Hex(ordersBuf);
   const incomeHash = sha256Hex(incomeText);
   return {
+    storeId,
     orders,
     incomeLines,
     ordersHash,
     incomeHash,
-    fingerprint: batchFingerprint(ordersHash, incomeHash),
+    fingerprint: batchFingerprint(ordersHash, incomeHash, storeId),
     incomeFeeRowCount: incomeFeeRows.length,
     ordersFileName,
     incomeFileName,
@@ -57,6 +58,7 @@ export async function parseUpload(
 export interface PreviewOutput {
   result: DryRunResult;
   meta: {
+    storeId: string;
     ordersFileName: string;
     incomeFileName: string;
     fingerprint: string;
@@ -66,15 +68,17 @@ export interface PreviewOutput {
   };
 }
 
-/** Read ledger context from the DB and compute the dry-run. Never writes. */
+/** Read ledger context from the DB and compute the store-scoped dry-run. Never writes. */
 export async function buildPreview(parsed: ParsedUpload): Promise<PreviewOutput> {
-  const [products, mappings, existingLines, existingBatch] = await Promise.all([
+  const [products, mappings, existingLines, existingOrderLines, existingBatch] = await Promise.all([
     prisma.product.findMany({
       where: { deletedAt: null },
       select: { id: true, sku: true, name: true, currentStock: true, purchaseCost: true },
     }),
-    prisma.darazSkuMapping.findMany({ select: { sellerSku: true, productId: true } }),
+    // All mappings (with store); the dry-run resolves only those for parsed.storeId.
+    prisma.darazSkuMapping.findMany({ select: { storeId: true, sellerSku: true, productId: true } }),
     prisma.darazIncomeLine.findMany({ select: { orderItemId: true, statementNumber: true } }),
+    prisma.darazOrderItem.findMany({ select: { orderItemId: true } }),
     prisma.darazImportBatch.findUnique({
       where: { fingerprint: parsed.fingerprint },
       select: { id: true, status: true },
@@ -82,19 +86,24 @@ export async function buildPreview(parsed: ParsedUpload): Promise<PreviewOutput>
   ]);
 
   const alreadyImported = new Set(existingLines.map((l) => dupKey(l.orderItemId, l.statementNumber)));
+  const existingOrderLineIds = new Set(existingOrderLines.map((o) => o.orderItemId));
 
   const result = computeDryRun({
+    storeId: parsed.storeId,
     incomeLines: parsed.incomeLines,
     orders: parsed.orders,
-    skuMappings: mappings,
+    // storeId on a mapping may be null on legacy rows; coerce for the resolver.
+    skuMappings: mappings.map((m) => ({ storeId: m.storeId ?? '', sellerSku: m.sellerSku, productId: m.productId })),
     products: products as LedgerProduct[],
     alreadyImported,
+    existingOrderLineIds,
     batchAlreadyImported: !!existingBatch,
   });
 
   return {
     result,
     meta: {
+      storeId: parsed.storeId,
       ordersFileName: parsed.ordersFileName,
       incomeFileName: parsed.incomeFileName,
       fingerprint: parsed.fingerprint,
@@ -111,8 +120,10 @@ export interface CommitResult {
   error?: string;
   summary?: {
     batchId: string;
+    storeId: string;
     orderItems: number;
-    customers: number;
+    orderLinesInserted: number;
+    orderLinesUpdated: number;
     incomeLines: number;
     fees: number;
     distinctOrderItemIds: number;
@@ -123,22 +134,26 @@ export interface CommitResult {
 }
 
 /**
- * Commit the import as a single atomic transaction. Idempotent at the batch
- * level (fingerprint) and the line level (composite unique). Rolls back on any
- * reconciliation difference. Encrypts all PII. Posts NO Sale / StockMovement /
- * stock / COGS / P&L — those wait until Seller SKUs are mapped.
+ * Commit the import as a single atomic transaction, scoped to the selected
+ * store. Idempotent at the batch level (store+files fingerprint), the income
+ * line level (composite unique — already-imported lines are skipped), and the
+ * order line level (Order Line ID — re-uploads UPDATE in place via ON CONFLICT,
+ * so a Shipping line that became Delivered updates the same row). Writes NO
+ * customer data of any kind. Posts NO Sale / StockMovement / stock / COGS / P&L.
  */
 export async function commitImport(
   parsed: ParsedUpload,
   user: SessionUser | null
 ): Promise<CommitResult> {
-  // Hard gate: refuse to persist customer data without a valid encryption key.
-  if (!piiKeyConfigured()) {
-    return {
-      ok: false,
-      alreadyImported: false,
-      error: 'Customer PII encryption key (DARAZ_PII_KEY) is missing or invalid — import refused.',
-    };
+  if (!parsed.storeId) {
+    return { ok: false, alreadyImported: false, error: 'Select a store before importing.' };
+  }
+  const store = await prisma.store.findFirst({
+    where: { id: parsed.storeId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!store) {
+    return { ok: false, alreadyImported: false, error: 'The selected store no longer exists.' };
   }
 
   const { result } = await buildPreview(parsed);
@@ -152,174 +167,89 @@ export async function commitImport(
     return { ok: false, alreadyImported: false, error: `${t.unmatched} income Order Item ID(s) have no matching order; import rolled back.` };
   }
 
-  // Resolve SKU → product (null until mapped) for stamping order items.
+  // Resolve SKU → product for THIS store only (store-isolated).
   const skuToProduct = new Map(
-    (await prisma.darazSkuMapping.findMany({ select: { sellerSku: true, productId: true } })).map(
-      (m) => [m.sellerSku, m.productId]
-    )
+    (
+      await prisma.darazSkuMapping.findMany({
+        where: { storeId: parsed.storeId },
+        select: { sellerSku: true, productId: true },
+      })
+    ).map((m) => [m.sellerSku, m.productId])
   );
-
-  // --- Build encrypted rows in memory (ids client-generated for bulk insert) ---
-  const customers: {
-    id: string;
-    nameEnc: string | null;
-    emailEnc: string | null;
-    phoneEnc: string | null;
-    nationalRegistrationEnc: string | null;
-    phoneHash: string | null;
-    emailHash: string | null;
-  }[] = [];
-
-  const orderItemRows: {
-    id: string;
-    orderItemId: string;
-    orderNumber: string;
-    sellerSku: string | null;
-    lazadaSku: string | null;
-    itemName: string | null;
-    variation: string | null;
-    quantity: number;
-    unitPrice: number;
-    paidPrice: number;
-    status: string | null;
-    createTime: Date | null;
-    deliveredDate: Date | null;
-    trackingCodeEnc: string | null;
-    trackingUrlEnc: string | null;
-    shippingProvider: string | null;
-    shippingNameEnc: string | null;
-    shippingAddressEnc: string | null;
-    shippingPhoneEnc: string | null;
-    shippingCityEnc: string | null;
-    shippingPostCodeEnc: string | null;
-    billingNameEnc: string | null;
-    billingAddressEnc: string | null;
-    billingPhoneEnc: string | null;
-    billingCityEnc: string | null;
-    shippingPhoneHash: string | null;
-    customerId: string;
-    productId: string | null;
-  }[] = [];
 
   const batchId = randomUUID();
 
-  for (const o of parsed.orders) {
-    const customerId = randomUUID();
-    customers.push({
-      id: customerId,
-      nameEnc: encryptPii(o.customerName),
-      emailEnc: encryptPii(o.customerEmail),
-      phoneEnc: encryptPii(o.shippingPhone),
-      nationalRegistrationEnc: encryptPii(o.nationalRegistrationNumber),
-      phoneHash: blindIndex(o.shippingPhone),
-      emailHash: blindIndex(o.customerEmail),
-    });
-    orderItemRows.push({
+  // --- Order lines: one row per Order Line ID, sanitized fields only + store ---
+  const seenLine = new Set<string>();
+  const orderRows = parsed.orders
+    .filter((o) => (seenLine.has(o.orderItemId) ? false : (seenLine.add(o.orderItemId), true)))
+    .map((o) => ({
       id: randomUUID(),
       orderItemId: o.orderItemId,
       orderNumber: o.orderNumber,
       sellerSku: o.sellerSku || null,
-      lazadaSku: o.lazadaSku || null,
-      itemName: o.itemName || null,
-      variation: o.variation || null,
-      quantity: 1,
-      unitPrice: o.unitPrice,
-      paidPrice: o.paidPrice,
+      itemName: o.productName || null,
+      quantity: o.quantity,
       status: o.status || null,
-      createTime: parseDarazDate(o.createTime),
-      deliveredDate: parseDarazDate(o.deliveredDate),
-      trackingCodeEnc: encryptPii(o.trackingCode),
-      trackingUrlEnc: encryptPii(o.trackingUrl),
-      shippingProvider: o.shippingProvider || null,
-      shippingNameEnc: encryptPii(o.shippingName),
-      shippingAddressEnc: encryptPii(o.shippingAddress),
-      shippingPhoneEnc: encryptPii(o.shippingPhone),
-      shippingCityEnc: encryptPii(o.shippingCity),
-      shippingPostCodeEnc: encryptPii(o.shippingPostCode),
-      billingNameEnc: encryptPii(o.billingName),
-      billingAddressEnc: encryptPii(o.billingAddress),
-      billingPhoneEnc: encryptPii(o.billingPhone),
-      billingCityEnc: encryptPii(o.billingCity),
-      shippingPhoneHash: blindIndex(o.shippingPhone),
-      customerId,
+      createTime: parseDarazDate(o.orderDate),
+      storeId: parsed.storeId,
       productId: o.sellerSku ? (skuToProduct.get(o.sellerSku) ?? null) : null,
-    });
-  }
-
-  const incomeLineRows: {
-    id: string;
-    orderItemId: string;
-    statementNumber: string;
-    orderNumber: string | null;
-    sellerSku: string | null;
-    productName: string | null;
-    statementPeriod: string | null;
-    transactionDate: Date | null;
-    orderCreationDate: Date | null;
-    orderStatus: string | null;
-    releaseStatus: string | null;
-    productPriceRevenue: number;
-    buyerShippingCredit: number;
-    totalCredits: number;
-    totalDeductions: number;
-    netAmount: number;
-    reconciled: boolean;
-    importBatchId: string;
-  }[] = [];
-  const feeRows: {
-    incomeLineId: string;
-    label: string;
-    category: IncomeLine['fees'][number]['category'];
-    amount: number;
-    vatAmount: number;
-    isRefund: boolean;
-    isReversal: boolean;
-  }[] = [];
-
-  for (const il of parsed.incomeLines) {
-    const incomeLineId = randomUUID();
-    incomeLineRows.push({
-      id: incomeLineId,
-      orderItemId: il.orderItemId,
-      statementNumber: il.statementNumber,
-      orderNumber: il.orderNumber || null,
-      sellerSku: il.sellerSku || null,
-      productName: il.productName || null,
-      statementPeriod: il.statementPeriod || null,
-      transactionDate: parseDarazDate(il.transactionDates[0]),
-      orderCreationDate: parseDarazDate(il.orderCreationDate),
-      orderStatus: il.orderStatus || null,
-      releaseStatus: il.releaseStatus || null,
-      productPriceRevenue: il.productPriceRevenue,
-      buyerShippingCredit: il.buyerShippingCredit,
-      totalCredits: il.totalCredits,
-      totalDeductions: il.totalDeductions,
-      netAmount: il.netAmount,
-      reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
       importBatchId: batchId,
-    });
-    for (const f of il.fees) {
-      feeRows.push({
-        incomeLineId,
-        label: f.label,
-        category: f.category,
-        amount: f.amount,
-        vatAmount: f.vatAmount,
-        isRefund: f.isRefund,
-        isReversal: f.isReversal,
-      });
-    }
-  }
+    }));
+
+  // --- Income lines: insert only the NEW (orderItemId, statementNumber) lines ---
+  const existingKeys = new Set(
+    (await prisma.darazIncomeLine.findMany({ select: { orderItemId: true, statementNumber: true } })).map(
+      (l) => dupKey(l.orderItemId, l.statementNumber)
+    )
+  );
+  const newIncome = parsed.incomeLines.filter(
+    (il) => !existingKeys.has(dupKey(il.orderItemId, il.statementNumber))
+  );
+  const expectedNet = round2(newIncome.reduce((s, il) => s + il.netAmount, 0));
+
+  const incomeLineRows = newIncome.map((il) => ({
+    id: randomUUID(),
+    orderItemId: il.orderItemId,
+    statementNumber: il.statementNumber,
+    orderNumber: il.orderNumber || null,
+    sellerSku: il.sellerSku || null,
+    productName: il.productName || null,
+    statementPeriod: il.statementPeriod || null,
+    transactionDate: parseDarazDate(il.transactionDates[0]),
+    orderCreationDate: parseDarazDate(il.orderCreationDate),
+    orderStatus: il.orderStatus || null,
+    releaseStatus: il.releaseStatus || null,
+    productPriceRevenue: il.productPriceRevenue,
+    buyerShippingCredit: il.buyerShippingCredit,
+    totalCredits: il.totalCredits,
+    totalDeductions: il.totalDeductions,
+    netAmount: il.netAmount,
+    reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
+    storeId: parsed.storeId,
+    importBatchId: batchId,
+  }));
+  const feeRows = newIncome.flatMap((il, i) =>
+    il.fees.map((f) => ({
+      incomeLineId: incomeLineRows[i].id,
+      label: f.label,
+      category: f.category,
+      amount: f.amount,
+      vatAmount: f.vatAmount,
+      isRefund: f.isRefund,
+      isReversal: f.isReversal,
+    }))
+  );
 
   try {
     const outcome = await prisma.$transaction(
       async (tx) => {
-        // Batch-level idempotency: identical files → recognised, no duplicates.
+        // Batch-level idempotency: identical store+files → recognised, no writes.
         const existing = await tx.darazImportBatch.findUnique({
           where: { fingerprint: parsed.fingerprint },
           select: { id: true },
         });
-        if (existing) return { batchId: existing.id, created: false };
+        if (existing) return { batchId: existing.id, created: false, updated: 0 };
 
         await tx.darazImportBatch.create({
           data: {
@@ -330,7 +260,8 @@ export async function commitImport(
             incomeFileName: parsed.incomeFileName,
             incomeFileHash: parsed.incomeHash,
             status: 'COMMITTED',
-            totalOrderItems: orderItemRows.length,
+            storeId: parsed.storeId,
+            totalOrderItems: orderRows.length,
             totalIncomeLines: incomeLineRows.length,
             distinctOrderItemIds: t.distinctOrderItemIds,
             matchedLines: t.matched,
@@ -338,31 +269,63 @@ export async function commitImport(
             duplicateLines: t.duplicates,
             unresolvedSkus: t.unresolvedSkus,
             statementCount: t.statementCount,
-            totalCredits: t.totalCredits,
-            totalDeductions: t.totalDeductions,
-            netPayout: t.darazNet,
+            totalCredits: round2(newIncome.reduce((s, il) => s + il.totalCredits, 0)),
+            totalDeductions: round2(newIncome.reduce((s, il) => s + il.totalDeductions, 0)),
+            netPayout: expectedNet,
             reconDiff: t.reconDiff,
             createdById: user?.id ?? null,
             createdBy: user?.name ?? user?.email ?? null,
           },
         });
-        await tx.darazCustomer.createMany({ data: customers });
-        await tx.darazOrderItem.createMany({ data: orderItemRows, skipDuplicates: true });
-        await tx.darazIncomeLine.createMany({ data: incomeLineRows });
-        await tx.darazIncomeFee.createMany({ data: feeRows });
 
-        // Post-write reconciliation: persisted net must equal Daraz net exactly.
+        // Order lines: bulk INSERT … ON CONFLICT (Order Line ID) DO UPDATE — a
+        // re-uploaded line updates in place (status transitions), never duplicates.
+        let updated = 0;
+        if (orderRows.length) {
+          const existingIds = new Set(
+            (
+              await tx.darazOrderItem.findMany({
+                where: { orderItemId: { in: orderRows.map((r) => r.orderItemId) } },
+                select: { orderItemId: true },
+              })
+            ).map((r) => r.orderItemId)
+          );
+          updated = orderRows.filter((r) => existingIds.has(r.orderItemId)).length;
+
+          const values = orderRows.map(
+            (r) =>
+              Prisma.sql`(${r.id}, ${r.orderItemId}, ${r.orderNumber}, ${r.sellerSku}, ${r.itemName}, ${r.quantity}, ${r.status}, ${r.createTime}, ${r.storeId}, ${r.productId}, ${r.importBatchId})`
+          );
+          await tx.$executeRaw`
+            INSERT INTO "DarazOrderItem"
+              ("id","orderItemId","orderNumber","sellerSku","itemName","quantity","status","createTime","storeId","productId","importBatchId")
+            VALUES ${Prisma.join(values)}
+            ON CONFLICT ("orderItemId") DO UPDATE SET
+              "orderNumber"   = EXCLUDED."orderNumber",
+              "sellerSku"     = EXCLUDED."sellerSku",
+              "itemName"      = EXCLUDED."itemName",
+              "quantity"      = EXCLUDED."quantity",
+              "status"        = EXCLUDED."status",
+              "createTime"    = EXCLUDED."createTime",
+              "storeId"       = EXCLUDED."storeId",
+              "productId"     = EXCLUDED."productId",
+              "importBatchId" = EXCLUDED."importBatchId"`;
+        }
+
+        if (incomeLineRows.length) await tx.darazIncomeLine.createMany({ data: incomeLineRows });
+        if (feeRows.length) await tx.darazIncomeFee.createMany({ data: feeRows });
+
+        // Post-write reconciliation: net of income lines written for THIS batch
+        // must equal the net of the new lines exactly.
         const agg = await tx.darazIncomeLine.aggregate({
           where: { importBatchId: batchId },
           _sum: { netAmount: true },
         });
         const persistedNet = round2(agg._sum.netAmount ?? 0);
-        if (persistedNet !== round2(t.darazNet)) {
-          throw new Error(
-            `Persisted net ${persistedNet} != Daraz net ${round2(t.darazNet)} — rolling back.`
-          );
+        if (persistedNet !== expectedNet) {
+          throw new Error(`Persisted net ${persistedNet} != expected ${expectedNet} — rolling back.`);
         }
-        return { batchId, created: true };
+        return { batchId, created: true, updated };
       },
       { timeout: 120_000, maxWait: 20_000 }
     );
@@ -373,17 +336,19 @@ export async function commitImport(
 
     const summary = {
       batchId: outcome.batchId,
-      orderItems: orderItemRows.length,
-      customers: customers.length,
+      storeId: parsed.storeId,
+      orderItems: orderRows.length,
+      orderLinesInserted: orderRows.length - outcome.updated,
+      orderLinesUpdated: outcome.updated,
       incomeLines: incomeLineRows.length,
       fees: feeRows.length,
       distinctOrderItemIds: t.distinctOrderItemIds,
       statementCount: t.statementCount,
-      netPayout: round2(t.darazNet),
+      netPayout: expectedNet,
       reconDiff: t.reconDiff,
     };
 
-    // Audit: counts + totals + batch id ONLY. Never any customer value.
+    // Audit: store + counts + totals + batch id ONLY. No customer value exists.
     await logAudit({
       user,
       action: 'CREATE',
@@ -394,7 +359,6 @@ export async function commitImport(
 
     return { ok: true, alreadyImported: false, summary };
   } catch (err) {
-    // Never surface PII; the message here is derived only from counts/totals.
     const msg = err instanceof Error ? err.message : 'Import failed and was rolled back.';
     return { ok: false, alreadyImported: false, error: msg };
   }

@@ -5,6 +5,7 @@
 // uploads before any parsing work is done.
 
 import ExcelJS from 'exceljs';
+import { validateSanitizedOrderHeaders } from './sanitize';
 
 // --- upload limits -----------------------------------------------------------
 // Sized for the real exports (Orders ~320 KB, Income ~810 KB, combined ~1.13 MB)
@@ -37,9 +38,6 @@ const CSV_MIME = new Set([
   '',
 ]);
 
-// Minimum headers the Orders export must contain for the join + normalisation.
-const REQUIRED_ORDER_COLUMNS = ['orderItemId', 'orderNumber', 'sellerSku', 'status'];
-
 export class UploadError extends Error {}
 
 /** Validate an uploaded file's presence, extension, MIME and size. */
@@ -50,7 +48,7 @@ export function validateUpload(
   if (!(file instanceof File) || file.size === 0) {
     throw new UploadError(
       kind === 'orders'
-        ? 'Upload the Daraz All Orders Excel export.'
+        ? 'Upload the sanitized Orders dataset (.xlsx, order identifiers only — no customer data).'
         : 'Upload the Daraz Income Order Details CSV.'
     );
   }
@@ -106,12 +104,11 @@ export async function readOrdersWorkbook(buf: Buffer): Promise<Record<string, un
     throw new UploadError('The Orders workbook has an unexpected number of columns.');
   }
 
-  const headerNames = new Set(Object.values(headers));
-  const missing = REQUIRED_ORDER_COLUMNS.filter((c) => !headerNames.has(c));
-  if (missing.length) {
-    throw new UploadError(
-      `The Orders workbook is missing expected column(s): ${missing.join(', ')}.`
-    );
+  // Sanitized-orders policy: accept ONLY permitted order-identifier columns and
+  // reject any customer/PII column outright. Enforced before any row is read.
+  const headerCheck = validateSanitizedOrderHeaders(Object.values(headers));
+  if (!headerCheck.ok) {
+    throw new UploadError(headerCheck.error ?? 'The Orders file is not a valid sanitized dataset.');
   }
 
   const rows: Record<string, unknown>[] = [];
