@@ -17,7 +17,11 @@ export type OrderField =
   | 'productName'
   | 'orderDate'
   | 'status'
-  | 'quantity';
+  | 'quantity'
+  // Transient only: used to pick the newest status when combining multiple
+  // Orders files (Shipping/Delivered/Returned). NEVER stored — it is not a
+  // retained order field and is dropped after the combine.
+  | 'updateTime';
 
 /** Required permitted fields for a file to be recognised as a Daraz Orders export. */
 export const REQUIRED_ORDER_FIELDS: OrderField[] = [
@@ -68,6 +72,14 @@ const HEADER_TO_FIELD: Record<string, OrderField> = {
   // Quantity (optional — otherwise derived as 1)
   quantity: 'quantity',
   qty: 'quantity',
+  // Update time (transient only — chooses the newest status, never stored)
+  updatetime: 'updateTime',
+  'update time': 'updateTime',
+  updatedat: 'updateTime',
+  'updated at': 'updateTime',
+  'last update': 'updateTime',
+  lastupdated: 'updateTime',
+  'status update time': 'updateTime',
 };
 
 /** Map a raw header to a permitted field, or null if it must be discarded. */
@@ -125,6 +137,12 @@ export interface SanitizedOrderRecord {
 
 type Row = Record<string, unknown>;
 
+/** A sanitized record plus the TRANSIENT updateTime used only during combine. */
+export interface RawOrderRecord extends SanitizedOrderRecord {
+  /** Transient — used to choose the newest status; never stored. */
+  updateTime?: string;
+}
+
 /** Project a raw row down to permitted fields only — discards everything else. */
 function projectRow(row: Row): Partial<Record<OrderField, string>> {
   const out: Partial<Record<OrderField, string>> = {};
@@ -136,19 +154,20 @@ function projectRow(row: Row): Partial<Record<OrderField, string>> {
 }
 
 /**
- * Extract sanitized records from raw order rows. Every non-permitted column is
- * discarded here — the returned records contain ONLY the seven permitted fields.
- * Quantity is derived as 1 unless a positive Quantity column is present. Rows
- * without an Order Line ID are skipped.
+ * Extract records from raw order rows. Every non-permitted column is discarded
+ * here — the returned records contain ONLY the seven permitted fields, plus the
+ * transient `updateTime` (present only if the source had it) used to pick the
+ * newest status when combining. Quantity is derived as 1 unless a positive
+ * Quantity column is present. Rows without an Order Line ID are skipped.
  */
-export function normaliseRawOrderRows(rows: Row[]): SanitizedOrderRecord[] {
-  const out: SanitizedOrderRecord[] = [];
+export function normaliseRawOrderRows(rows: Row[]): RawOrderRecord[] {
+  const out: RawOrderRecord[] = [];
   for (const raw of rows) {
     const r = projectRow(raw);
     const orderItemId = r.orderItemId ?? '';
     if (!orderItemId) continue;
     const q = Number((r.quantity ?? '').replace(/,/g, ''));
-    out.push({
+    const rec: RawOrderRecord = {
       orderItemId,
       orderNumber: r.orderNumber ?? '',
       sellerSku: r.sellerSku ?? '',
@@ -156,9 +175,83 @@ export function normaliseRawOrderRows(rows: Row[]): SanitizedOrderRecord[] {
       orderDate: r.orderDate ?? '',
       status: r.status ?? '',
       quantity: Number.isFinite(q) && q > 0 ? Math.floor(q) : 1,
-    });
+    };
+    if (r.updateTime) rec.updateTime = r.updateTime; // transient only
+    out.push(rec);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Combine multiple Orders files by Order Line ID (Shipping/Delivered/Returned)
+// ---------------------------------------------------------------------------
+
+/** Lifecycle rank — higher = later state. Fallback when updateTime is absent. */
+export function statusRank(status: string): number {
+  const x = (status || '').toLowerCase();
+  if (/return|refund/.test(x)) return 6;
+  if (/cancel|fail/.test(x)) return 5;
+  if (/deliver/.test(x)) return 4;
+  if (/ship|transit|dispatch|out for/.test(x)) return 3;
+  if (/pack|ready|process|pending|unpaid|confirm/.test(x)) return 2;
+  return 1;
+}
+
+/** Coarse status bucket for preview counts. */
+export function statusBucket(status: string): 'shipping' | 'delivered' | 'returned' | 'other' {
+  const x = (status || '').toLowerCase();
+  if (/return|refund/.test(x)) return 'returned';
+  if (/deliver/.test(x)) return 'delivered';
+  if (/ship|transit|dispatch|out for/.test(x)) return 'shipping';
+  return 'other';
+}
+
+const strip = (r: RawOrderRecord): SanitizedOrderRecord => ({
+  orderItemId: r.orderItemId,
+  orderNumber: r.orderNumber,
+  sellerSku: r.sellerSku,
+  productName: r.productName,
+  orderDate: r.orderDate,
+  status: r.status,
+  quantity: r.quantity,
+});
+
+/** Pick the record representing the newer state: newest updateTime wins; when
+ *  updateTime is absent/equal, the later lifecycle status wins. Deterministic
+ *  regardless of file order. */
+function newer(a: RawOrderRecord, b: RawOrderRecord): RawOrderRecord {
+  const ta = a.updateTime ? Date.parse(a.updateTime) : NaN;
+  const tb = b.updateTime ? Date.parse(b.updateTime) : NaN;
+  if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return ta > tb ? a : b;
+  if (!Number.isNaN(ta) && Number.isNaN(tb)) return a;
+  if (!Number.isNaN(tb) && Number.isNaN(ta)) return b;
+  return statusRank(b.status) >= statusRank(a.status) ? b : a;
+}
+
+export interface CombinedOrders {
+  /** One record per Order Line ID, in its newest state. updateTime stripped. */
+  records: SanitizedOrderRecord[];
+  /** Count of final records in each status bucket. */
+  byStatus: { shipping: number; delivered: number; returned: number; other: number };
+  /** Raw rows removed by combining (same Order Line ID across files/statuses). */
+  mergedDuplicates: number;
+}
+
+/**
+ * Combine order rows from one or many raw Orders files into one record per
+ * Order Line ID, keeping the newest status. The transient updateTime is used
+ * only to order and is dropped from the result — it is never stored.
+ */
+export function combineOrderRecords(rows: RawOrderRecord[]): CombinedOrders {
+  const byLine = new Map<string, RawOrderRecord>();
+  for (const r of rows) {
+    const cur = byLine.get(r.orderItemId);
+    byLine.set(r.orderItemId, cur ? newer(cur, r) : r);
+  }
+  const records = [...byLine.values()].map(strip);
+  const byStatus = { shipping: 0, delivered: 0, returned: 0, other: 0 };
+  for (const r of records) byStatus[statusBucket(r.status)]++;
+  return { records, byStatus, mergedDuplicates: rows.length - records.length };
 }
 
 // ---------------------------------------------------------------------------

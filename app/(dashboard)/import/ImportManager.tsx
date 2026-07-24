@@ -80,8 +80,8 @@ export function ImportManager({
   stores: StoreOpt[];
   hasCommittedImport: boolean;
 }) {
-  const [files, setFiles] = useState<{ orders: File | null; income: File | null }>({
-    orders: null,
+  const [files, setFiles] = useState<{ orders: File[]; income: File | null }>({
+    orders: [],
     income: null,
   });
   const [error, setError] = useState<string | null>(null);
@@ -146,13 +146,13 @@ export function ImportManager({
       setError('Select a store first.');
       return null;
     }
-    if (!files.orders || !files.income) {
-      setError('Select both the official Daraz Orders .xlsx and the Income .csv.');
+    if (files.orders.length === 0 || !files.income) {
+      setError('Select at least one official Daraz Orders .xlsx and the Income .csv.');
       return null;
     }
     const fd = new FormData();
     fd.append('storeId', storeId);
-    fd.append('ordersFile', files.orders);
+    for (const f of files.orders) fd.append('ordersFile', f);
     fd.append('incomeFile', files.income);
     return fd;
   }
@@ -207,10 +207,12 @@ export function ImportManager({
           Daraz Income Import
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Choose a store, then upload the official <strong>All Orders</strong> Excel and the
-          <strong> Income Order Details</strong> CSV directly — customer data is discarded
-          automatically. Preview first; importing records store-scoped orders and statements — but
-          never posts stock, COGS or P&amp;L, and never creates Purchases, Yahya debts or Sales.
+          Choose a store, then upload the official <strong>All Orders</strong> Excel exports
+          (Shipping, Delivered and Returned — select them all at once) and the
+          <strong> Income Order Details</strong> CSV directly. Customer data is discarded
+          automatically, and order lines are combined by Order Line ID (newest status kept).
+          Preview first; importing records store-scoped orders and statements — but never posts
+          stock, COGS or P&amp;L, and never creates Purchases, Yahya debts or Sales.
         </p>
       </div>
 
@@ -250,12 +252,18 @@ export function ImportManager({
               </p>
             )}
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Official Daraz All Orders export (.xlsx, ≤3 MB)" required>
+              <Field label="Official Daraz All Orders exports (.xlsx — Shipping, Delivered, Returned; select one or more)" required>
                 <Input
                   type="file"
                   accept=".xlsx"
-                  onChange={(e) => setFiles((f) => ({ ...f, orders: e.target.files?.[0] ?? null }))}
+                  multiple
+                  onChange={(e) => setFiles((f) => ({ ...f, orders: Array.from(e.target.files ?? []) }))}
                 />
+                {files.orders.length > 0 && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    {files.orders.length} Orders file(s) selected — combined by Order Line ID before import.
+                  </p>
+                )}
               </Field>
               <Field label="Income Order Details (.csv, ≤3 MB)" required>
                 <Input
@@ -317,10 +325,26 @@ export function ImportManager({
           {/* --- headline counts --- */}
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard label="Statement lines" value={formatNumber(r.totals.incomeLines)} hint={`${formatNumber(r.totals.statementCount)} statements`} />
-            <StatCard label="Distinct order-item IDs" value={formatNumber(r.totals.distinctOrderItemIds)} hint={`${formatNumber(r.totals.orderItems)} order rows`} />
+            <StatCard label="Distinct order-item IDs" value={formatNumber(r.totals.distinctOrderItemIds)} hint={`${formatNumber(r.totals.orderItems)} order lines`} />
             <StatCard label="Matched" value={`${formatNumber(r.totals.matched)} / ${formatNumber(r.totals.distinctOrderItemIds)}`} tone="positive" hint={`${formatNumber(r.totals.unmatched)} unmatched`} />
-            <StatCard label="Unresolved SKUs" value={formatNumber(r.totals.unresolvedSkus)} tone={r.totals.unresolvedSkus ? 'warning' : 'positive'} hint={`${formatNumber(r.totals.duplicates)} duplicates`} />
+            <StatCard label="Unresolved SKUs" value={formatNumber(r.totals.unresolvedSkus)} tone={r.totals.unresolvedSkus ? 'warning' : 'positive'} hint={`${formatNumber(r.totals.duplicates)} income dupes`} />
           </div>
+
+          {/* --- order lines by status / merge (across all uploaded Orders files) --- */}
+          <Card className="mb-4">
+            <CardHeader
+              title="Order lines by status"
+              subtitle="Combined across all uploaded Orders files by Order Line ID — one line per ID, newest status kept."
+            />
+            <CardBody className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <Mini label="Shipping" value={formatNumber(r.totals.ordersByStatus.shipping)} />
+              <Mini label="Delivered" value={formatNumber(r.totals.ordersByStatus.delivered)} />
+              <Mini label="Returned" value={formatNumber(r.totals.ordersByStatus.returned)} />
+              <Mini label="Other" value={formatNumber(r.totals.ordersByStatus.other)} />
+              <Mini label="Merged duplicates" value={formatNumber(r.totals.orderRowsMerged)} />
+              <Mini label="New / update" value={`${formatNumber(r.totals.orderLinesNew)} / ${formatNumber(r.totals.orderLinesUpdated)}`} />
+            </CardBody>
+          </Card>
 
           {/* --- reconciliation --- */}
           <Card className="mb-4">
