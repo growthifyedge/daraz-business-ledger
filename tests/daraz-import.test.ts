@@ -247,12 +247,16 @@ test('sku mapping: resolved when mapping exists, blocked when missing (never gue
   );
 });
 
-test('duplicates: already-imported (orderItemId, statementNumber) flagged, excluded from importable', () => {
+test('duplicates: already-imported (orderItemId, statementNumber) is flagged and updated in place', () => {
   const r = dryRun({ alreadyImported: new Set([dupKey('OI-1', 'ST-1')]) });
   assert.equal(r.totals.duplicates, 1);
-  assert.equal(r.lines.find((l) => l.orderItemId === 'OI-1')!.isDuplicate, true);
-  // OI-1 delivered+resolved but duplicate → not importable; OI-2 returned+resolved
-  assert.equal(r.totals.importable, 1);
+  assert.equal(r.totals.incomeLinesUpdated, 1); // revised → updated, not ignored
+  assert.equal(r.totals.incomeLinesNew, 1); // OI-2 is new
+  const oi1 = r.lines.find((l) => l.orderItemId === 'OI-1')!;
+  assert.equal(oi1.isDuplicate, true);
+  assert.equal(oi1.blocked, false); // no longer blocked — it updates in place
+  // Both lines are importable now (one insert, one update).
+  assert.equal(r.totals.importable, 2);
 });
 
 test('reconciliation: every line reconciles and totals match Daraz net exactly', () => {

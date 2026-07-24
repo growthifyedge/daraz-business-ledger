@@ -88,6 +88,10 @@ export interface DryRunResult {
     matched: number; // distinct income Order Item IDs with a matching order
     unmatched: number;
     duplicates: number;
+    /** Income lines whose (orderItemId, statementNumber) is new — inserted. */
+    incomeLinesNew: number;
+    /** Income lines already present — updated in place (revised figures + fees). */
+    incomeLinesUpdated: number;
     importable: number;
     blocked: number; // lines that cannot import (unresolved SKU / unmatched / dup)
     resolvedSkus: number;
@@ -127,6 +131,24 @@ function emptyCatMap(): Record<FeeCategory, number> {
 /** Composite idempotency key for a statement line. */
 export function dupKey(orderItemId: string, statementNumber: string): string {
   return `${orderItemId} ${statementNumber}`;
+}
+
+/**
+ * Split income lines into inserts vs updates by their composite key. A line whose
+ * (orderItemId, statementNumber) already exists is an UPDATE — Daraz revised its
+ * figures, so the stored line and its fees are refreshed rather than ignored.
+ * Pure — the commit performs the update + atomic fee replacement.
+ */
+export function planIncomeLineWrites<T extends { orderItemId: string; statementNumber: string }>(
+  existingKeys: Set<string>,
+  incomeLines: T[]
+): { inserts: T[]; updates: T[] } {
+  const inserts: T[] = [];
+  const updates: T[] = [];
+  for (const il of incomeLines) {
+    (existingKeys.has(dupKey(il.orderItemId, il.statementNumber)) ? updates : inserts).push(il);
+  }
+  return { inserts, updates };
 }
 
 export function computeDryRun(input: DryRunInput): DryRunResult {
@@ -186,8 +208,10 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
     const calcNet = round2(il.totalCredits + il.totalDeductions);
     const reconDiff = round2(calcNet - il.netAmount);
 
-    // A line is blocked (cannot import) if unmatched, duplicate, or SKU unresolved.
-    const blocked = !isMatched || isDuplicate || !skuResolved;
+    // A line is blocked (cannot import) if unmatched or its SKU is unresolved.
+    // An already-imported (orderItemId, statementNumber) is NOT blocked — it is
+    // updated in place when Daraz revises its figures (fees replaced atomically).
+    const blocked = !isMatched || !skuResolved;
     if (!skuResolved) {
       const agg = unresolvedAgg.get(sku) ?? {
         productName: il.productName || order?.productName || '',
@@ -321,6 +345,8 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
       matched,
       unmatched: distinctOrderItemIds - matched,
       duplicates,
+      incomeLinesNew: input.incomeLines.length - duplicates,
+      incomeLinesUpdated: duplicates,
       importable,
       blocked: lines.filter((l) => l.blocked).length,
       resolvedSkus: resolvedSkus.size,

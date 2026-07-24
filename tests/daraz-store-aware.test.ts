@@ -4,6 +4,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   validateSanitizedOrderHeaders,
@@ -11,7 +13,13 @@ import {
   planOrderLineWrites,
   type SanitizedOrderRecord,
 } from '../lib/daraz/sanitize';
-import { computeDryRun, type SkuMappingEntry, type LedgerProduct } from '../lib/daraz/dryrun';
+import {
+  computeDryRun,
+  dupKey,
+  planIncomeLineWrites,
+  type SkuMappingEntry,
+  type LedgerProduct,
+} from '../lib/daraz/dryrun';
 import { buildIncomeLines, parseIncomeCsv } from '../lib/daraz/parse';
 import { batchFingerprint, sha256Hex } from '../lib/daraz/fingerprint';
 
@@ -170,4 +178,78 @@ test('sanitized normalise: derives quantity 1 and carries no PII', () => {
   assert.equal(rows[0].quantity, 1);
   assert.equal(rows[0].orderItemId, 'OL-1');
   assert.deepEqual(Object.keys(rows[0]).sort(), ['orderDate', 'orderItemId', 'orderNumber', 'productName', 'quantity', 'sellerSku', 'status']);
+});
+
+// --- revised income-line updates (not silently ignored) ---------------------
+
+test('revised income: an existing (orderItemId, statementNumber) is an UPDATE, not a skip', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(csvFor('OI-1', 'SKU-X')));
+  const key = dupKey(lines[0].orderItemId, lines[0].statementNumber);
+  const plan = planIncomeLineWrites(new Set([key]), lines);
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.inserts.length, 0);
+  // The revised (new) figures flow through the update, not the stored ones.
+  assert.equal(plan.updates[0].netAmount, lines[0].netAmount);
+});
+
+test('revised income: a brand-new statement line is an insert', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(csvFor('OI-2', 'SKU-X')));
+  const plan = planIncomeLineWrites(new Set(['other OI-key']), lines);
+  assert.equal(plan.inserts.length, 1);
+  assert.equal(plan.updates.length, 0);
+});
+
+test('revised income: dry-run reports updated vs new and does NOT block the revised line', () => {
+  const lines = buildIncomeLines(parseIncomeCsv(csvFor('OI-1', 'SKU-X')));
+  const key = dupKey('OI-1', lines[0].statementNumber);
+  const r = computeDryRun({
+    storeId: ASHU,
+    incomeLines: lines,
+    orders: [order('OI-1', 'SKU-X')],
+    skuMappings: MAPPINGS,
+    products: PRODUCTS,
+    alreadyImported: new Set([key]), // already imported before — a revision
+    batchAlreadyImported: false,
+  });
+  assert.equal(r.totals.incomeLinesUpdated, 1);
+  assert.equal(r.totals.incomeLinesNew, 0);
+  assert.equal(r.lines[0].isDuplicate, true);
+  assert.equal(r.lines[0].blocked, false); // revised → updated, not blocked/ignored
+  assert.ok(r.totals.importable >= 1);
+});
+
+// --- no UI/API can reveal customer or tracking data --------------------------
+
+function walk(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out.push(...walk(p));
+    else if (/\.(ts|tsx)$/.test(name)) out.push(p);
+  }
+  return out;
+}
+
+const REVEAL_PATTERNS =
+  /decryptPii|encryptPii|blindIndex|revealCustomer|CustomerReveal|nameEnc|emailEnc|phoneEnc|nationalRegistrationEnc|shipping\w*Enc|billing\w*Enc|trackingCodeEnc|trackingUrlEnc/;
+
+test('exposure guard: statement reveal component and action are removed', () => {
+  assert.equal(existsSync('app/(dashboard)/statements/CustomerReveal.tsx'), false);
+  assert.equal(existsSync('app/(dashboard)/statements/actions.ts'), false);
+});
+
+test('exposure guard: no statements/import code references customer/tracking decryption', () => {
+  const files = [
+    ...walk('app/(dashboard)/statements'),
+    ...walk('app/(dashboard)/import'),
+    ...walk('app/api/daraz-import'),
+    'lib/daraz/persist.ts',
+    'lib/daraz/dryrun.ts',
+    'lib/daraz/sanitize.ts',
+  ].filter(existsSync);
+  assert.ok(files.length > 0, 'expected to scan some files');
+  for (const f of files) {
+    assert.equal(REVEAL_PATTERNS.test(readFileSync(f, 'utf8')), false, `${f} must not reference customer/tracking PII`);
+  }
 });

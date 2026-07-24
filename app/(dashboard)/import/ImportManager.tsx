@@ -58,6 +58,7 @@ interface CommitSummary {
   orderLinesInserted: number;
   orderLinesUpdated: number;
   incomeLines: number;
+  incomeLinesUpdated: number;
   fees: number;
   distinctOrderItemIds: number;
   statementCount: number;

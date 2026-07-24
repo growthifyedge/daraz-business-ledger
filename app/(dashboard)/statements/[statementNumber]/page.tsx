@@ -7,7 +7,6 @@ import { ALL_FEE_CATEGORIES, FEE_CATEGORY_LABEL } from '@/lib/daraz/fees';
 import { formatMoney } from '@/lib/utils';
 import { Card, CardBody, CardHeader, Table, THead, TH, TD, TRow, Badge } from '@/components/ui';
 import { ArrowLeft } from 'lucide-react';
-import { CustomerReveal } from '../CustomerReveal';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,7 +112,7 @@ export default async function StatementDetail({
       <Card>
         <CardHeader
           title="Order items"
-          subtitle="Customer and shipping details are masked. Reveal is Owner/Admin-only and audited."
+          subtitle="Order identifiers and financial figures only. No customer, shipping, billing or tracking data is stored or shown."
         />
         <CardBody className="p-0">
           <div className="overflow-x-auto">
@@ -128,7 +127,6 @@ export default async function StatementDetail({
                   <TH align="right">Credits</TH>
                   <TH align="right">Deductions</TH>
                   <TH align="right">Net</TH>
-                  <TH>Customer</TH>
                 </TRow>
               </THead>
               <tbody>
@@ -145,9 +143,6 @@ export default async function StatementDetail({
                       <TD align="right">{formatMoney(l.totalCredits)}</TD>
                       <TD align="right" className="text-rose-600">{formatMoney(l.totalDeductions)}</TD>
                       <TD align="right" className="font-medium">{formatMoney(l.netAmount)}</TD>
-                      <TD>
-                        <CustomerReveal orderItemId={l.orderItemId} />
-                      </TD>
                     </TRow>
                   );
                 })}

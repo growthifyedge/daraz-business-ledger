@@ -12,7 +12,7 @@ import { logAudit } from '@/lib/audit';
 import type { SessionUser } from '@/lib/auth';
 import { parseIncomeCsv, buildIncomeLines, parseDarazDate, type IncomeLine } from './parse';
 import { normaliseSanitizedOrderRows, type SanitizedOrderRecord } from './sanitize';
-import { computeDryRun, dupKey, type DryRunResult, type LedgerProduct } from './dryrun';
+import { computeDryRun, dupKey, planIncomeLineWrites, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
 import { readOrdersWorkbook } from './xlsx';
 
@@ -125,6 +125,7 @@ export interface CommitResult {
     orderLinesInserted: number;
     orderLinesUpdated: number;
     incomeLines: number;
+    incomeLinesUpdated: number;
     fees: number;
     distinctOrderItemIds: number;
     statementCount: number;
@@ -197,15 +198,19 @@ export async function commitImport(
       importBatchId: batchId,
     }));
 
-  // --- Income lines: insert only the NEW (orderItemId, statementNumber) lines ---
+  // --- Income lines: insert NEW (orderItemId, statementNumber) lines; UPDATE
+  //     existing ones in place (Daraz revised figures — fees replaced atomically).
   const existingKeys = new Set(
     (await prisma.darazIncomeLine.findMany({ select: { orderItemId: true, statementNumber: true } })).map(
       (l) => dupKey(l.orderItemId, l.statementNumber)
     )
   );
-  const newIncome = parsed.incomeLines.filter(
-    (il) => !existingKeys.has(dupKey(il.orderItemId, il.statementNumber))
+  const { inserts: newIncome, updates: revisedIncome } = planIncomeLineWrites(
+    existingKeys,
+    parsed.incomeLines
   );
+  // The batch's net reflects only newly inserted lines; revisions correct their
+  // own existing lines in place (and keep their original batch linkage).
   const expectedNet = round2(newIncome.reduce((s, il) => s + il.netAmount, 0));
 
   const incomeLineRows = newIncome.map((il) => ({
@@ -249,7 +254,7 @@ export async function commitImport(
           where: { fingerprint: parsed.fingerprint },
           select: { id: true },
         });
-        if (existing) return { batchId: existing.id, created: false, updated: 0 };
+        if (existing) return { batchId: existing.id, created: false, updated: 0, incomeUpdated: 0 };
 
         await tx.darazImportBatch.create({
           data: {
@@ -315,8 +320,47 @@ export async function commitImport(
         if (incomeLineRows.length) await tx.darazIncomeLine.createMany({ data: incomeLineRows });
         if (feeRows.length) await tx.darazIncomeFee.createMany({ data: feeRows });
 
+        // Revised statement lines: update figures in place and REPLACE their fee
+        // rows atomically (delete old, insert new) — never silently ignored.
+        for (const il of revisedIncome) {
+          const line = await tx.darazIncomeLine.update({
+            where: { orderItemId_statementNumber: { orderItemId: il.orderItemId, statementNumber: il.statementNumber } },
+            data: {
+              orderNumber: il.orderNumber || null,
+              sellerSku: il.sellerSku || null,
+              productName: il.productName || null,
+              statementPeriod: il.statementPeriod || null,
+              transactionDate: parseDarazDate(il.transactionDates[0]),
+              orderCreationDate: parseDarazDate(il.orderCreationDate),
+              orderStatus: il.orderStatus || null,
+              releaseStatus: il.releaseStatus || null,
+              productPriceRevenue: il.productPriceRevenue,
+              buyerShippingCredit: il.buyerShippingCredit,
+              totalCredits: il.totalCredits,
+              totalDeductions: il.totalDeductions,
+              netAmount: il.netAmount,
+              reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
+            },
+            select: { id: true },
+          });
+          await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: line.id } });
+          if (il.fees.length) {
+            await tx.darazIncomeFee.createMany({
+              data: il.fees.map((f) => ({
+                incomeLineId: line.id,
+                label: f.label,
+                category: f.category,
+                amount: f.amount,
+                vatAmount: f.vatAmount,
+                isRefund: f.isRefund,
+                isReversal: f.isReversal,
+              })),
+            });
+          }
+        }
+
         // Post-write reconciliation: net of income lines written for THIS batch
-        // must equal the net of the new lines exactly.
+        // must equal the net of the newly inserted lines exactly.
         const agg = await tx.darazIncomeLine.aggregate({
           where: { importBatchId: batchId },
           _sum: { netAmount: true },
@@ -325,7 +369,7 @@ export async function commitImport(
         if (persistedNet !== expectedNet) {
           throw new Error(`Persisted net ${persistedNet} != expected ${expectedNet} — rolling back.`);
         }
-        return { batchId, created: true, updated };
+        return { batchId, created: true, updated, incomeUpdated: revisedIncome.length };
       },
       { timeout: 120_000, maxWait: 20_000 }
     );
@@ -341,6 +385,7 @@ export async function commitImport(
       orderLinesInserted: orderRows.length - outcome.updated,
       orderLinesUpdated: outcome.updated,
       incomeLines: incomeLineRows.length,
+      incomeLinesUpdated: outcome.incomeUpdated,
       fees: feeRows.length,
       distinctOrderItemIds: t.distinctOrderItemIds,
       statementCount: t.statementCount,
