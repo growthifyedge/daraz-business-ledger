@@ -147,7 +147,7 @@ export function ImportManager({
       return null;
     }
     if (!files.orders || !files.income) {
-      setError('Select both the sanitized Orders .xlsx and the Income .csv.');
+      setError('Select both the official Daraz Orders .xlsx and the Income .csv.');
       return null;
     }
     const fd = new FormData();
@@ -207,20 +207,21 @@ export function ImportManager({
           Daraz Income Import
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Choose a store, then upload the <strong>sanitized Orders</strong> dataset (order
-          identifiers only) and the official <strong>Income Order Details</strong> CSV. Preview
-          first; importing records store-scoped orders and statements — but never posts stock,
-          COGS or P&amp;L, and never creates Purchases, Yahya debts or Sales.
+          Choose a store, then upload the official <strong>All Orders</strong> Excel and the
+          <strong> Income Order Details</strong> CSV directly — customer data is discarded
+          automatically. Preview first; importing records store-scoped orders and statements — but
+          never posts stock, COGS or P&amp;L, and never creates Purchases, Yahya debts or Sales.
         </p>
       </div>
 
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <span>
-          No customer data is accepted. The Orders file must contain only order identifiers
-          (Order Number, Order Line ID, Seller SKU, Product Name, Order Date, Order Status).
-          Files with names, emails, phones, addresses, national-ID, billing/shipping or tracking
-          columns are rejected — such data is never stored, encrypted, logged, or committed.
+          Upload official Daraz Orders Excel — customer data is automatically discarded and never
+          stored. Only order identifiers are kept (Order Number, Order Line ID, Seller SKU, Product
+          Name, Order Date, Order Status); customer, phone, address, national-ID, billing, shipping,
+          tracking, carrier and price columns are dropped in memory and never stored, logged, or
+          committed.
         </span>
       </div>
 
@@ -249,7 +250,7 @@ export function ImportManager({
               </p>
             )}
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Sanitized Orders dataset (.xlsx, ≤3 MB)" required>
+              <Field label="Official Daraz All Orders export (.xlsx, ≤3 MB)" required>
                 <Input
                   type="file"
                   accept=".xlsx"
@@ -304,7 +305,7 @@ export function ImportManager({
             <CardHeader title="What import will do" subtitle="Store-scoped orders and statements import now; inventory, P&L and Sales wait." />
             <CardBody className="grid gap-2 sm:grid-cols-3">
               <PostureRow label="Statements imported (store-scoped)" value="Yes" tone="ok" />
-              <PostureRow label="Sanitized order lines imported" value="Yes — no customer data" tone="ok" />
+              <PostureRow label="Order lines imported" value="Yes — customer data discarded" tone="ok" />
               <PostureRow
                 label="Stock / COGS / P&L / Sales posted"
                 value="No — never from this import"

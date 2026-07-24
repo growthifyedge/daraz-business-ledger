@@ -8,8 +8,8 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
-  validateSanitizedOrderHeaders,
-  normaliseSanitizedOrderRows,
+  validateRawOrderHeaders,
+  normaliseRawOrderRows,
   planOrderLineWrites,
   type SanitizedOrderRecord,
 } from '../lib/daraz/sanitize';
@@ -122,62 +122,96 @@ test('order-line idempotency: duplicate Order Line IDs within one file collapse 
   assert.equal(plan.inserts.length, 1);
 });
 
-// --- raw-PII-column rejection ------------------------------------------------
+// --- raw file with PII is ACCEPTED and auto-sanitized (not rejected) ---------
 
-test('PII rejection: any customer/personal column rejects the whole Orders file', () => {
-  const forbiddenSets = [
-    ['Order Number', 'Order Line ID', 'Seller SKU', 'Product Name', 'Order Date', 'Order Status', 'Customer Name'],
-    ['Order Line ID', 'customerEmail'],
-    ['Order Line ID', 'shippingPhone'],
-    ['Order Line ID', 'Shipping Address'],
-    ['Order Line ID', 'nationalRegistrationNumber'],
-    ['Order Line ID', 'billingName'],
-    ['Order Line ID', 'trackingCode'],
-  ];
-  for (const headers of forbiddenSets) {
-    const v = validateSanitizedOrderHeaders(headers);
-    assert.equal(v.ok, false, `should reject: ${headers.join(',')}`);
-    assert.ok((v.forbidden?.length ?? 0) > 0, `should flag PII in: ${headers.join(',')}`);
+// Real raw Daraz "All Orders" headers use camelCase and carry lots of PII.
+const RAW_HEADERS = [
+  'orderItemId', 'orderNumber', 'sellerSku', 'itemName', 'createTime', 'status',
+  'customerName', 'customerEmail', 'nationalRegistrationNumber',
+  'shippingName', 'shippingAddress', 'shippingPhone', 'shippingCity',
+  'billingName', 'billingAddress', 'billingPhone', 'trackingCode', 'trackingUrl',
+  'shippingProvider', 'unitPrice', 'paidPrice', 'notes',
+];
+
+test('raw accept: the official raw Daraz Orders header (with PII columns) is accepted', () => {
+  const v = validateRawOrderHeaders(RAW_HEADERS);
+  assert.equal(v.ok, true); // NOT rejected
+  assert.ok((v.discardedColumns ?? 0) >= 16); // all PII/extra columns are discarded
+});
+
+test('raw accept: a file missing the order identifiers is rejected as not-a-Daraz-export', () => {
+  const v = validateRawOrderHeaders(['customerName', 'shippingPhone', 'unitPrice']);
+  assert.equal(v.ok, false);
+  assert.ok((v.missing?.length ?? 0) > 0);
+});
+
+test('raw accept: synonyms (Order Item ID / SKU / Status / Order Date) are recognised', () => {
+  const v = validateRawOrderHeaders(['Order Number', 'Order Item ID', 'SKU', 'Product Name', 'Order Date', 'Status']);
+  assert.equal(v.ok, true);
+});
+
+// --- retained rows contain ONLY the seven permitted fields (PII discarded) ----
+
+const PERMITTED_KEYS = ['orderDate', 'orderItemId', 'orderNumber', 'productName', 'quantity', 'sellerSku', 'status'];
+
+test('auto-discard: a raw row with PII yields ONLY the seven permitted fields', () => {
+  const rows = normaliseRawOrderRows([
+    {
+      orderItemId: 'OL-1', orderNumber: 'ORD-1', sellerSku: 'SKU-X', itemName: 'Widget',
+      createTime: '01 Jul 2026', status: 'Delivered',
+      customerName: 'Real Person', customerEmail: 'p@example.com', shippingPhone: '03001234567',
+      shippingAddress: 'House 1, Lahore', nationalRegistrationNumber: '3520212345671',
+      billingName: 'Real Person', trackingCode: 'TRK-999', shippingProvider: 'Daraz Express',
+      unitPrice: '999', paidPrice: '999', notes: 'leave at gate',
+    },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(Object.keys(rows[0]).sort(), PERMITTED_KEYS);
+  assert.equal(rows[0].orderItemId, 'OL-1');
+  assert.equal(rows[0].productName, 'Widget'); // itemName → productName
+  assert.equal(rows[0].orderDate, '01 Jul 2026'); // createTime → orderDate
+  assert.equal(rows[0].quantity, 1); // derived
+});
+
+test('auto-discard: NO discarded PII value appears anywhere in the sanitized output', () => {
+  const rows = normaliseRawOrderRows([
+    {
+      orderItemId: 'OL-9', orderNumber: 'ORD-9', sellerSku: 'SKU-X', itemName: 'Widget',
+      createTime: '01 Jul 2026', status: 'Shipping',
+      customerName: 'Jane Doe', customerEmail: 'jane@x.com', shippingPhone: '03007654321',
+      shippingAddress: 'Secret Street 42', trackingCode: 'TRK-SECRET', billingPhone: '03009999999',
+    },
+  ]);
+  const serialized = JSON.stringify(rows);
+  for (const secret of ['Jane Doe', 'jane@x.com', '03007654321', 'Secret Street 42', 'TRK-SECRET', '03009999999']) {
+    assert.equal(serialized.includes(secret), false, `discarded PII "${secret}" must not survive`);
   }
 });
 
-test('PII rejection: the error names the offending column(s)', () => {
-  const v = validateSanitizedOrderHeaders(['Order Line ID', 'Customer Name', 'shippingPhone']);
-  assert.match(v.error ?? '', /Customer Name/);
-  assert.match(v.error ?? '', /shippingPhone/);
-});
+// --- integration: read a real raw .xlsx (with PII) and confirm it is stripped -
 
-// --- sanitized-file acceptance ----------------------------------------------
-
-test('sanitized acceptance: the exact permitted column set is accepted', () => {
-  const v = validateSanitizedOrderHeaders([
-    'Order Number', 'Order Line ID', 'Seller SKU', 'Product Name', 'Order Date', 'Order Status',
+test('raw xlsx: reading a raw workbook with PII columns keeps only permitted fields', async () => {
+  const ExcelJS = (await import('exceljs')).default;
+  const { readOrdersWorkbook } = await import('../lib/daraz/xlsx');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('orders');
+  ws.addRow(RAW_HEADERS);
+  ws.addRow([
+    'OL-1', 'ORD-1', 'SKU-X', 'Widget', '01 Jul 2026', 'Delivered',
+    'Real Person', 'p@example.com', '3520212345671',
+    'Real Person', 'House 1', '03001234567', 'Lahore',
+    'Real Person', 'House 1', '03001234567', 'TRK-1', 'http://track',
+    'Daraz Express', '999', '999', 'note',
   ]);
-  assert.equal(v.ok, true);
-});
-
-test('sanitized acceptance: accepted synonyms and optional Quantity are allowed', () => {
-  const v = validateSanitizedOrderHeaders([
-    'Order Number', 'Order Item ID', 'SKU', 'Product Name', 'Order Date', 'Status', 'Quantity',
-  ]);
-  assert.equal(v.ok, true);
-});
-
-test('sanitized acceptance: a missing required column is reported (not treated as PII)', () => {
-  const v = validateSanitizedOrderHeaders(['Order Line ID', 'Seller SKU', 'Product Name', 'Order Date', 'Order Status']);
-  assert.equal(v.ok, false);
-  assert.deepEqual(v.missing, ['Order Number']);
-  assert.equal(v.forbidden, undefined);
-});
-
-test('sanitized normalise: derives quantity 1 and carries no PII', () => {
-  const rows = normaliseSanitizedOrderRows([
-    { 'Order Number': 'ORD-1', 'Order Line ID': 'OL-1', 'Seller SKU': 'SKU-X', 'Product Name': 'P', 'Order Date': '01 Jul 2026', 'Order Status': 'Delivered' },
-  ]);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].quantity, 1);
-  assert.equal(rows[0].orderItemId, 'OL-1');
-  assert.deepEqual(Object.keys(rows[0]).sort(), ['orderDate', 'orderItemId', 'orderNumber', 'productName', 'quantity', 'sellerSku', 'status']);
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const parsed = await readOrdersWorkbook(buf);
+  assert.equal(parsed.length, 1);
+  // Only permitted (canonical) keys are present — PII columns never read.
+  assert.deepEqual(Object.keys(parsed[0]).sort(), ['orderDate', 'orderItemId', 'orderNumber', 'productName', 'sellerSku', 'status']);
+  const serialized = JSON.stringify(parsed);
+  for (const secret of ['Real Person', 'p@example.com', '3520212345671', '03001234567', 'TRK-1', 'Daraz Express']) {
+    assert.equal(serialized.includes(secret), false, `PII "${secret}" must never be read from the workbook`);
+  }
 });
 
 // --- revised income-line updates (not silently ignored) ---------------------
