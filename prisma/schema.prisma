@@ -573,72 +573,29 @@ model DarazImportBatch {
   @@index([storeId])
 }
 
-/// Confidential customer identity. OWNER/ADMIN access only; phone and
-/// nationalRegistrationNumber are masked in the UI by default and every
-/// view/reveal/edit/export is audit-logged. Never logged, never in fixtures/Git.
-model DarazCustomer {
-  id String @id @default(cuid())
-  // ---- All PII columns store AES-256-GCM CIPHERTEXT (lib/daraz/crypto), never
-  // readable plaintext. Decryption is server-only, owner/admin, audit-logged.
-  nameEnc                    String? // encrypted
-  emailEnc                   String? // encrypted
-  phoneEnc                   String? // encrypted
-  nationalRegistrationEnc    String? // encrypted
-  // ---- Blind indexes (keyed HMAC-SHA256): one-way, for equality search only.
-  // They store NO searchable plaintext and cannot be reversed to the value.
-  phoneHash String? // blindIndex(phone)
-  emailHash String? // blindIndex(email)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  orderItems DarazOrderItem[]
-
-  @@index([phoneHash])
-  @@index([emailHash])
-}
-
 /// One physical unit (one row per unique Daraz orderItemId). Quantity is always
-/// 1 per orderItemId; multi-unit orders are multiple rows. Holds the order,
-/// tracking, shipping and billing snapshot; customer identity links to DarazCustomer.
+/// 1 per orderItemId; multi-unit orders are multiple rows. Holds ONLY sanitized
+/// order identifiers + the resolved ledger product + store. No customer,
+/// shipping, billing or tracking data is stored (removed in the privacy cleanup).
 model DarazOrderItem {
   id            String    @id @default(cuid())
-  orderItemId   String    @unique // Daraz Order Item ID — the idempotency key + income join key
+  orderItemId   String    @unique // Daraz Order Line ID — the idempotency key + income join key
   orderNumber   String
   sellerSku     String?
   lazadaSku     String?
-  itemName      String?
+  itemName      String? // Product Name
   variation     String?
   quantity      Int       @default(1)
   unitPrice     Float     @default(0)
   paidPrice     Float     @default(0)
-  status        String?
-  createTime    DateTime?
+  status        String? // Order Status
+  createTime    DateTime? // Order Date
   deliveredDate DateTime?
 
-  // tracking / logistics — CIPHERTEXT (AES-256-GCM), server-only decryption
-  trackingCodeEnc     String?
-  trackingUrlEnc      String?
-  shippingProvider    String? // not PII — carrier name kept readable
-
-  // shipping + billing snapshot — all CIPHERTEXT (AES-256-GCM)
-  shippingNameEnc     String?
-  shippingAddressEnc  String?
-  shippingPhoneEnc    String?
-  shippingCityEnc     String?
-  shippingPostCodeEnc String?
-  billingNameEnc      String?
-  billingAddressEnc   String?
-  billingPhoneEnc     String?
-  billingCityEnc      String?
-  shippingPhoneHash   String? // blindIndex for search
-
-  customerId    String?
-  customer      DarazCustomer?    @relation(fields: [customerId], references: [id])
   productId     String? // resolved ledger Product (via DarazSkuMapping); null until mapped
   product       Product?          @relation(fields: [productId], references: [id])
   importBatchId String?
   importBatch   DarazImportBatch? @relation(fields: [importBatchId], references: [id])
-  // Phase 3 (additive, nullable): store attribution. Backfill + NOT NULL deferred.
   storeId       String?
   store         Store?            @relation(fields: [storeId], references: [id])
   // One order item can appear in MORE THAN ONE weekly statement (e.g. a returned
@@ -649,7 +606,6 @@ model DarazOrderItem {
 
   @@index([orderNumber])
   @@index([sellerSku])
-  @@index([customerId])
   @@index([productId])
   @@index([storeId])
 }

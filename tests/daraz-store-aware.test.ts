@@ -232,21 +232,26 @@ function walk(dir: string): string[] {
 }
 
 const REVEAL_PATTERNS =
-  /decryptPii|encryptPii|blindIndex|revealCustomer|CustomerReveal|nameEnc|emailEnc|phoneEnc|nationalRegistrationEnc|shipping\w*Enc|billing\w*Enc|trackingCodeEnc|trackingUrlEnc/;
+  /decryptPii|encryptPii|blindIndex|revealCustomer|CustomerReveal|DarazCustomer|darazCustomer|nameEnc|emailEnc|phoneEnc|nationalRegistrationEnc|shipping\w*Enc|billing\w*Enc|trackingCodeEnc|trackingUrlEnc|shippingPhoneHash/;
 
-test('exposure guard: statement reveal component and action are removed', () => {
-  assert.equal(existsSync('app/(dashboard)/statements/CustomerReveal.tsx'), false);
-  assert.equal(existsSync('app/(dashboard)/statements/actions.ts'), false);
+test('exposure guard: reveal + crypto/mask modules are removed', () => {
+  for (const f of [
+    'app/(dashboard)/statements/CustomerReveal.tsx',
+    'app/(dashboard)/statements/actions.ts',
+    'lib/daraz/crypto.ts',
+    'lib/daraz/mask.ts',
+  ]) {
+    assert.equal(existsSync(f), false, `${f} must be removed`);
+  }
 });
 
-test('exposure guard: no statements/import code references customer/tracking decryption', () => {
+test('exposure guard: no app/lib/schema code references customer/tracking PII or decryption', () => {
   const files = [
     ...walk('app/(dashboard)/statements'),
     ...walk('app/(dashboard)/import'),
     ...walk('app/api/daraz-import'),
-    'lib/daraz/persist.ts',
-    'lib/daraz/dryrun.ts',
-    'lib/daraz/sanitize.ts',
+    ...walk('lib/daraz'),
+    'prisma/schema.prisma',
   ].filter(existsSync);
   assert.ok(files.length > 0, 'expected to scan some files');
   for (const f of files) {

@@ -4,9 +4,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Test-only PII key (synthetic — NOT a real key). Set before importing crypto.
-process.env.DARAZ_PII_KEY ||= Buffer.alloc(32, 7).toString('base64');
-
 import { ALL_FEE_CATEGORIES, categoriseFee, toCategorisedFee, sumByCategory } from '../lib/daraz/fees';
 import { parseIncomeCsv, buildIncomeLines } from '../lib/daraz/parse';
 import {
@@ -24,8 +21,6 @@ import {
 } from '../lib/daraz/dryrun';
 import { summariseStatements } from '../lib/daraz/statements';
 import { batchFingerprint, sha256Hex } from '../lib/daraz/fingerprint';
-import { maskPhone, maskNationalId, maskEmail, maskCustomer } from '../lib/daraz/mask';
-import { encryptPii, decryptPii, blindIndex } from '../lib/daraz/crypto';
 import { refundCountsInPnl, sellerLossForPnl, isEligibleForPnl } from '../lib/returns';
 
 // Narrowing helpers: stock/COGS become "unavailable" (a string) until every SKU
@@ -351,35 +346,7 @@ test('idempotency: same file pair flagged as already-imported', () => {
 });
 
 // ===========================================================================
-// 7. Customer masking
-// ===========================================================================
-
-test('masking: phone and national id are masked to last 3 by default', () => {
-  assert.equal(maskPhone('03001234852'), '••••••••852');
-  assert.equal(maskNationalId('3520212345671'), '••••••••••671');
-  assert.equal(maskPhone(''), '');
-  assert.equal(maskPhone(null), '');
-});
-
-test('masking: email keeps first char + domain', () => {
-  assert.equal(maskEmail('ahmed@example.com'), 'a••••@example.com');
-});
-
-test('masking: maskCustomer never exposes full phone/national id', () => {
-  const m = maskCustomer({
-    name: 'Synthetic Buyer',
-    email: 'buyer@example.com',
-    phone: '03001234852',
-    nationalRegistrationNumber: '3520212345671',
-  });
-  assert.equal(m.name, 'Synthetic Buyer'); // name shown to owner/admin
-  assert.ok(!m.phoneMasked.includes('0300'));
-  assert.ok(m.phoneMasked.endsWith('852'));
-  assert.ok(!m.nationalIdMasked.includes('35202'));
-});
-
-// ===========================================================================
-// 8. Unresolved SKU is an import blocker — NOT a zero-impact success
+// 7. Unresolved SKU is an import blocker — NOT a zero-impact success
 // ===========================================================================
 
 test('unresolved SKU: stock/COGS/profit are unavailable, not zero, while any SKU is unmapped', () => {
@@ -458,51 +425,7 @@ test('refund rule: an unlinked/manual return keeps existing eligibility behaviou
 });
 
 // ===========================================================================
-// 11. PII encryption — AES-256-GCM + blind index
-// ===========================================================================
-
-test('crypto: encrypt→decrypt round-trips and ciphertext is never plaintext', () => {
-  const plain = 'Synthetic Buyer, House 1, Lahore';
-  const enc = encryptPii(plain);
-  assert.ok(enc && enc.startsWith('v1:'));
-  assert.ok(!enc.includes(plain)); // stored value is not readable plaintext
-  assert.equal(decryptPii(enc), plain);
-  assert.equal(encryptPii(null), null);
-  assert.equal(encryptPii(''), null);
-  assert.equal(decryptPii(null), null);
-});
-
-test('crypto: same plaintext encrypts differently each time but decrypts equal (random IV)', () => {
-  const p = '03001234852';
-  const a = encryptPii(p)!;
-  const b = encryptPii(p)!;
-  assert.notEqual(a, b);
-  assert.equal(decryptPii(a), decryptPii(b));
-});
-
-test('crypto: tampering with ciphertext is detected (GCM auth) and throws', () => {
-  const enc = encryptPii('3520212345671')!;
-  const parts = enc.split(':');
-  // Flip a byte in the ciphertext segment.
-  const ct = Buffer.from(parts[3], 'base64');
-  ct[0] ^= 0xff;
-  const tampered = [parts[0], parts[1], parts[2], ct.toString('base64')].join(':');
-  assert.throws(() => decryptPii(tampered));
-  assert.throws(() => decryptPii('v1:not:valid'));
-});
-
-test('crypto: blind index is deterministic, normalised, one-way and non-plaintext', () => {
-  const h1 = blindIndex('0300 123 4852')!;
-  const h2 = blindIndex('03001234852')!; // whitespace-insensitive
-  assert.equal(h1, h2);
-  assert.match(h1, /^[0-9a-f]{64}$/); // HMAC-SHA256 hex
-  assert.ok(!h1.includes('03001234852')); // reveals no plaintext
-  assert.notEqual(blindIndex('03001234852'), blindIndex('03009999999'));
-  assert.equal(blindIndex(null), null);
-});
-
-// ===========================================================================
-// 12. Composite statement identity — one Order Item ID in two statements
+// 11. Composite statement identity — one Order Item ID in two statements
 // ===========================================================================
 
 // A single fee row with an explicit statement number.
