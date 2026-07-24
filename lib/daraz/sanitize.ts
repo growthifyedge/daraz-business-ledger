@@ -1,160 +1,160 @@
-// Sanitized Orders dataset policy — pure, no I/O, unit-testable.
+// Auto-discard policy for the raw Daraz Orders export — pure, no I/O.
 //
-// Phase 4 replaces the raw "All Orders export" (which carried customer PII) with
-// a sanitized dataset that must contain ONLY order identifiers. This module is
-// the single source of truth for what is permitted and what is rejected, and it
-// normalises the permitted columns into a minimal, PII-free record.
+// The app accepts the NORMAL official Daraz "All Orders" Excel directly. This
+// module extracts ONLY the seven permitted fields and discards every other raw
+// column and value (customer, email, phone, address, national-ID, billing,
+// shipping, tracking, carrier, prices, notes, …). Discarded data is never
+// stored, logged, audited, previewed or exported — it is dropped in memory.
 //
-// Permitted columns (exactly these; Quantity optional — else derived as 1):
-//   Order Number, Order Line ID, Seller SKU, Product Name, Order Date, Order Status
-//
-// Any customer/PII column (name, email, phone, address, national-ID,
-// billing/shipping, tracking, etc.) causes the whole file to be rejected — such
-// data is never read, stored, encrypted, logged, previewed, audited or committed.
+// Retained fields:
+//   Order Number, Order Line ID, Seller SKU, Product Name, Order Date,
+//   Order Status, and a derived quantity (1 per Order Line ID).
 
-/** Canonical permitted headers. */
-export const PERMITTED_ORDER_COLUMNS = [
-  'Order Number',
-  'Order Line ID',
-  'Seller SKU',
-  'Product Name',
-  'Order Date',
-  'Order Status',
-] as const;
+export type OrderField =
+  | 'orderItemId'
+  | 'orderNumber'
+  | 'sellerSku'
+  | 'productName'
+  | 'orderDate'
+  | 'status'
+  | 'quantity';
 
-/** Optional permitted header — quantity is otherwise derived as 1 per line. */
-const OPTIONAL_ORDER_COLUMNS = ['Quantity'] as const;
-
-/** Accepted synonyms → canonical header. Kept small and explicit. */
-const HEADER_ALIASES: Record<string, string> = {
-  'order item id': 'Order Line ID',
-  'order line id': 'Order Line ID',
-  'order number': 'Order Number',
-  'seller sku': 'Seller SKU',
-  sku: 'Seller SKU',
-  'product name': 'Product Name',
-  'order date': 'Order Date',
-  'order status': 'Order Status',
-  status: 'Order Status',
-  quantity: 'Quantity',
-  qty: 'Quantity',
-};
-
-// Forbidden substrings (case-insensitive). Matched only AGAINST columns that are
-// not already a permitted/optional canonical header, so "Product Name" (permitted)
-// is never caught by the "name" rule.
-const FORBIDDEN_PATTERNS: RegExp[] = [
-  /name/, /e-?mail/, /phone/, /mobile/, /contact/, /whatsapp/,
-  /address/, /\baddr\b/, /street/, /city/, /post\s*code/, /postcode/, /\bzip\b/, /province/, /region/,
-  /national/, /nric/, /cnic/, /\bnid\b/, /passport/, /identity/, /registration/,
-  /billing/, /shipping/, /ship\s*to/, /recipient/, /buyer/, /customer/, /consignee/,
-  /tracking/, /\btrack\b/, /awb/, /waybill/, /courier/,
+/** Required permitted fields for a file to be recognised as a Daraz Orders export. */
+export const REQUIRED_ORDER_FIELDS: OrderField[] = [
+  'orderItemId',
+  'orderNumber',
+  'sellerSku',
+  'productName',
+  'orderDate',
+  'status',
 ];
 
-const norm = (h: string) => h.trim().replace(/\s+/g, ' ');
-const canonicalOf = (h: string): string => HEADER_ALIASES[norm(h).toLowerCase()] ?? norm(h);
+const norm = (h: string) => h.trim().replace(/\s+/g, ' ').toLowerCase();
 
-const PERMITTED_SET = new Set<string>([...PERMITTED_ORDER_COLUMNS, ...OPTIONAL_ORDER_COLUMNS]);
+// Header aliases → canonical field. Covers the raw Daraz export headers
+// (camelCase: orderItemId, itemName, createTime, …) and the human-readable
+// variants. Anything NOT listed here is discarded.
+const HEADER_TO_FIELD: Record<string, OrderField> = {
+  // Order Line ID
+  orderitemid: 'orderItemId',
+  'order item id': 'orderItemId',
+  'order line id': 'orderItemId',
+  orderlineid: 'orderItemId',
+  // Order Number
+  ordernumber: 'orderNumber',
+  'order number': 'orderNumber',
+  'order no': 'orderNumber',
+  orderno: 'orderNumber',
+  // Seller SKU
+  sellersku: 'sellerSku',
+  'seller sku': 'sellerSku',
+  sku: 'sellerSku',
+  // Product Name (NOT bare "name" — that is customer data)
+  itemname: 'productName',
+  'item name': 'productName',
+  productname: 'productName',
+  'product name': 'productName',
+  // Order Date
+  createtime: 'orderDate',
+  'create time': 'orderDate',
+  orderdate: 'orderDate',
+  'order date': 'orderDate',
+  'order creation date': 'orderDate',
+  ordercreationdate: 'orderDate',
+  // Order Status
+  status: 'status',
+  'order status': 'status',
+  orderstatus: 'status',
+  // Quantity (optional — otherwise derived as 1)
+  quantity: 'quantity',
+  qty: 'quantity',
+};
+
+/** Map a raw header to a permitted field, or null if it must be discarded. */
+export function permittedOrderField(header: string): OrderField | null {
+  return HEADER_TO_FIELD[norm(header)] ?? null;
+}
 
 export interface HeaderValidation {
   ok: boolean;
-  /** Human-readable rejection message (only when !ok). */
   error?: string;
-  /** Offending headers that look like customer/PII data. */
-  forbidden?: string[];
-  /** Headers that are neither permitted nor recognised PII. */
-  unexpected?: string[];
-  /** Required permitted headers that are absent. */
-  missing?: string[];
+  /** Required permitted fields not found in the header row. */
+  missing?: OrderField[];
+  /** Count of raw columns that will be discarded (PII etc.) — informational only,
+   *  never the column names, never persisted. */
+  discardedColumns?: number;
 }
 
 /**
- * Validate a sanitized Orders header row. Pure — returns a result, never throws.
- * A file is accepted only when every column is a permitted order identifier and
- * all required columns are present. Any PII-shaped column rejects the whole file.
+ * Validate a raw Orders header row. Accepts ANY file that contains the required
+ * order-identifier columns — extra columns (including PII) are permitted and
+ * silently discarded, never a rejection. Pure — returns a result, never throws.
  */
-export function validateSanitizedOrderHeaders(headers: string[]): HeaderValidation {
-  const seen = headers.map(norm).filter(Boolean);
-  const forbidden: string[] = [];
-  const unexpected: string[] = [];
-  const present = new Set<string>();
-
-  for (const h of seen) {
-    const canon = canonicalOf(h);
-    if (PERMITTED_SET.has(canon)) {
-      present.add(canon);
-      continue;
-    }
-    if (FORBIDDEN_PATTERNS.some((re) => re.test(h.toLowerCase()))) forbidden.push(h);
-    else unexpected.push(h);
+export function validateRawOrderHeaders(headers: string[]): HeaderValidation {
+  const present = new Set<OrderField>();
+  let discarded = 0;
+  for (const h of headers) {
+    const f = permittedOrderField(h);
+    if (f) present.add(f);
+    else if (h.trim()) discarded++;
   }
-
-  const missing = PERMITTED_ORDER_COLUMNS.filter((c) => !present.has(c));
-
-  if (forbidden.length) {
-    return {
-      ok: false,
-      forbidden,
-      error:
-        `Rejected: the Orders file contains customer/personal-data column(s): ${forbidden.join(', ')}. ` +
-        `Upload a sanitized file with only: ${PERMITTED_ORDER_COLUMNS.join(', ')}.`,
-    };
-  }
+  const missing = REQUIRED_ORDER_FIELDS.filter((f) => !present.has(f));
   if (missing.length) {
-    return { ok: false, missing, error: `The Orders file is missing required column(s): ${missing.join(', ')}.` };
-  }
-  if (unexpected.length) {
     return {
       ok: false,
-      unexpected,
+      missing,
       error:
-        `Unexpected column(s) in the Orders file: ${unexpected.join(', ')}. ` +
-        `Only these are allowed: ${PERMITTED_ORDER_COLUMNS.join(', ')}${OPTIONAL_ORDER_COLUMNS.length ? ', ' + OPTIONAL_ORDER_COLUMNS.join(', ') : ''}.`,
+        'This does not look like the Daraz All Orders export — missing column(s) for: ' +
+        missing.join(', ') +
+        '.',
     };
   }
-  return { ok: true };
+  return { ok: true, discardedColumns: discarded };
 }
 
 /** One sanitized order line — a single unit, no PII. */
 export interface SanitizedOrderRecord {
-  orderItemId: string; // "Order Line ID" — the idempotency key + income join key
+  orderItemId: string; // "Order Line ID" — idempotency key + income join key
   orderNumber: string;
   sellerSku: string;
   productName: string;
   orderDate: string;
   status: string;
-  quantity: number; // derived = 1 per Order Line ID unless a Quantity column is present
+  quantity: number; // derived = 1 unless a positive Quantity column is present
 }
 
 type Row = Record<string, unknown>;
 
-/** Read a value by canonical header, tolerating accepted aliases. */
-function pick(row: Row, canonical: string): string {
+/** Project a raw row down to permitted fields only — discards everything else. */
+function projectRow(row: Row): Partial<Record<OrderField, string>> {
+  const out: Partial<Record<OrderField, string>> = {};
   for (const [k, v] of Object.entries(row)) {
-    if (canonicalOf(k) === canonical) return v == null ? '' : String(v).trim();
+    const f = permittedOrderField(k);
+    if (f && out[f] === undefined) out[f] = v == null ? '' : String(v).trim();
   }
-  return '';
+  return out;
 }
 
 /**
- * Normalise permitted-only rows into minimal records. Quantity is derived as 1
- * (one unit per Order Line ID) unless a positive Quantity column is present.
- * Rows without an Order Line ID are skipped.
+ * Extract sanitized records from raw order rows. Every non-permitted column is
+ * discarded here — the returned records contain ONLY the seven permitted fields.
+ * Quantity is derived as 1 unless a positive Quantity column is present. Rows
+ * without an Order Line ID are skipped.
  */
-export function normaliseSanitizedOrderRows(rows: Row[]): SanitizedOrderRecord[] {
+export function normaliseRawOrderRows(rows: Row[]): SanitizedOrderRecord[] {
   const out: SanitizedOrderRecord[] = [];
-  for (const r of rows) {
-    const orderItemId = pick(r, 'Order Line ID');
+  for (const raw of rows) {
+    const r = projectRow(raw);
+    const orderItemId = r.orderItemId ?? '';
     if (!orderItemId) continue;
-    const qRaw = pick(r, 'Quantity');
-    const q = Number(qRaw.replace(/,/g, ''));
+    const q = Number((r.quantity ?? '').replace(/,/g, ''));
     out.push({
       orderItemId,
-      orderNumber: pick(r, 'Order Number'),
-      sellerSku: pick(r, 'Seller SKU'),
-      productName: pick(r, 'Product Name'),
-      orderDate: pick(r, 'Order Date'),
-      status: pick(r, 'Order Status'),
+      orderNumber: r.orderNumber ?? '',
+      sellerSku: r.sellerSku ?? '',
+      productName: r.productName ?? '',
+      orderDate: r.orderDate ?? '',
+      status: r.status ?? '',
       quantity: Number.isFinite(q) && q > 0 ? Math.floor(q) : 1,
     });
   }

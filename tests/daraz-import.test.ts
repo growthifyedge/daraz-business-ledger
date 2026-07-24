@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { ALL_FEE_CATEGORIES, categoriseFee, toCategorisedFee, sumByCategory } from '../lib/daraz/fees';
 import { parseIncomeCsv, buildIncomeLines } from '../lib/daraz/parse';
 import {
-  normaliseSanitizedOrderRows,
-  validateSanitizedOrderHeaders,
+  normaliseRawOrderRows,
+  validateRawOrderHeaders,
   planOrderLineWrites,
   type SanitizedOrderRecord,
 } from '../lib/daraz/sanitize';
@@ -113,8 +113,8 @@ test('parse: income CSV skips banner/blank, reads header, parses fee rows', () =
   assert.equal(first.statementNumber, 'ST-1');
 });
 
-test('parse: sanitized order rows normalise to one unit per Order Line ID', () => {
-  const orders = normaliseSanitizedOrderRows([
+test('parse: raw order rows normalise to one unit per Order Line ID', () => {
+  const orders = normaliseRawOrderRows([
     { 'Order Line ID': 'OI-1', 'Order Number': 'ORD-1', 'Seller SKU': 'SKU-A', 'Product Name': 'P A', 'Order Date': '01 Jul 2026', 'Order Status': 'Delivered' },
     { 'Order Line ID': 'OI-2', 'Order Number': 'ORD-2', 'Seller SKU': 'SKU-B', 'Product Name': 'P B', 'Order Date': '01 Jul 2026', 'Order Status': 'Shipping' },
   ]);

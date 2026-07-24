@@ -11,7 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { logAudit } from '@/lib/audit';
 import type { SessionUser } from '@/lib/auth';
 import { parseIncomeCsv, buildIncomeLines, parseDarazDate, type IncomeLine } from './parse';
-import { normaliseSanitizedOrderRows, type SanitizedOrderRecord } from './sanitize';
+import { normaliseRawOrderRows, type SanitizedOrderRecord } from './sanitize';
 import { computeDryRun, dupKey, planIncomeLineWrites, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
 import { readOrdersWorkbook } from './xlsx';
@@ -37,7 +37,9 @@ export async function parseUpload(
   incomeFileName: string,
   storeId: string
 ): Promise<ParsedUpload> {
-  const orders = normaliseSanitizedOrderRows(await readOrdersWorkbook(ordersBuf));
+  // readOrdersWorkbook already drops non-permitted columns; normalise projects
+  // again (defence in depth) and derives quantity. No raw/PII value is retained.
+  const orders = normaliseRawOrderRows(await readOrdersWorkbook(ordersBuf));
   const incomeFeeRows = parseIncomeCsv(incomeText);
   const incomeLines = buildIncomeLines(incomeFeeRows);
   const ordersHash = sha256Hex(ordersBuf);

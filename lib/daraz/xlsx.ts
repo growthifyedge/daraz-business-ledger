@@ -5,7 +5,7 @@
 // uploads before any parsing work is done.
 
 import ExcelJS from 'exceljs';
-import { validateSanitizedOrderHeaders } from './sanitize';
+import { validateRawOrderHeaders, permittedOrderField, type OrderField } from './sanitize';
 
 // --- upload limits -----------------------------------------------------------
 // Sized for the real exports (Orders ~320 KB, Income ~810 KB, combined ~1.13 MB)
@@ -48,7 +48,7 @@ export function validateUpload(
   if (!(file instanceof File) || file.size === 0) {
     throw new UploadError(
       kind === 'orders'
-        ? 'Upload the sanitized Orders dataset (.xlsx, order identifiers only — no customer data).'
+        ? 'Upload the official Daraz All Orders Excel export (.xlsx). Customer data is discarded automatically.'
         : 'Upload the Daraz Income Order Details CSV.'
     );
   }
@@ -88,27 +88,30 @@ export async function readOrdersWorkbook(buf: Buffer): Promise<Record<string, un
     throw new UploadError(`Orders workbook exceeds the ${LIMITS.maxRows}-row limit.`);
   }
 
-  // Header row (row 1) -> column-index → key map.
+  // Header row (row 1). Automatic discard: we build a column map ONLY for the
+  // permitted order fields; every other raw column (customer, phone, address,
+  // national-ID, billing, shipping, tracking, carrier, prices, notes, …) is
+  // dropped here and its values are never even read into memory.
   const headerRow = ws.getRow(1);
-  const headers: Record<number, string> = {};
-  let headerCount = 0;
+  const allHeaderNames: string[] = [];
+  const kept: Record<number, OrderField> = {}; // colNumber → permitted field
   headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
     const name = cell.value == null ? '' : String(cell.value).trim();
-    if (name) {
-      headers[colNumber] = name;
-      headerCount++;
-    }
+    if (!name) return;
+    allHeaderNames.push(name);
+    const field = permittedOrderField(name);
+    if (field) kept[colNumber] = field;
   });
-  if (headerCount === 0) throw new UploadError('The Orders workbook has no header row.');
-  if (headerCount > LIMITS.maxColumns) {
+  if (allHeaderNames.length === 0) throw new UploadError('The Orders workbook has no header row.');
+  if (allHeaderNames.length > LIMITS.maxColumns) {
     throw new UploadError('The Orders workbook has an unexpected number of columns.');
   }
 
-  // Sanitized-orders policy: accept ONLY permitted order-identifier columns and
-  // reject any customer/PII column outright. Enforced before any row is read.
-  const headerCheck = validateSanitizedOrderHeaders(Object.values(headers));
+  // Accept any real Daraz Orders export; only require the permitted identifier
+  // columns to be present. Extra/PII columns are allowed and discarded.
+  const headerCheck = validateRawOrderHeaders(allHeaderNames);
   if (!headerCheck.ok) {
-    throw new UploadError(headerCheck.error ?? 'The Orders file is not a valid sanitized dataset.');
+    throw new UploadError(headerCheck.error ?? 'The Orders file is not a recognised Daraz export.');
   }
 
   const rows: Record<string, unknown>[] = [];
@@ -116,7 +119,8 @@ export async function readOrdersWorkbook(buf: Buffer): Promise<Record<string, un
     const row = ws.getRow(r);
     const obj: Record<string, unknown> = {};
     let any = false;
-    for (const [colStr, key] of Object.entries(headers)) {
+    // Read ONLY the kept (permitted) columns — PII columns are never accessed.
+    for (const [colStr, field] of Object.entries(kept)) {
       const cell = row.getCell(Number(colStr));
       let v: unknown = cell.value;
       // Flatten exceljs rich-text / hyperlink cell objects to their text.
@@ -127,7 +131,7 @@ export async function readOrdersWorkbook(buf: Buffer): Promise<Record<string, un
           : '') as unknown;
       }
       if (v != null && v !== '') any = true;
-      obj[key] = v ?? '';
+      obj[field] = v ?? '';
     }
     if (any) rows.push(obj);
   }
