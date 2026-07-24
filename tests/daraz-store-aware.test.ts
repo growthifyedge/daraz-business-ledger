@@ -248,6 +248,86 @@ test('combine: a later weekly re-upload updates the same line, not a duplicate (
   assert.equal(plan.updates[0].status, 'Delivered');
 });
 
+// --- Daraz Returned export (different header names) ---------------------------
+
+// The Returned export uses different headers for Order Number and Seller SKU
+// (the bug: previously rejected as "missing orderNumber and sellerSku").
+const RETURNED_HEADERS = [
+  'Sale Order Number', 'Return Order Item ID', 'Shop SKU', 'Product Name',
+  'Return Requested Date', 'Return Status', 'Update Time',
+  'Buyer Name', 'Buyer Phone', 'Return Reason', 'Tracking Number',
+];
+
+test('returned format: the Daraz Returned header set is now accepted (not missing orderNumber/sellerSku)', () => {
+  const v = validateRawOrderHeaders(RETURNED_HEADERS);
+  assert.equal(v.ok, true);
+  assert.equal(v.missing, undefined);
+});
+
+test('returned format: rows map to the seven permitted fields; PII discarded', () => {
+  const rows = normaliseRawOrderRows([
+    {
+      'Sale Order Number': 'ORD-1', 'Return Order Item ID': 'OL-1', 'Shop SKU': 'SKU-X',
+      'Product Name': 'Widget', 'Return Requested Date': '05 Jul 2026', 'Return Status': 'Returned',
+      'Update Time': '2026-07-05T10:00:00Z',
+      'Buyer Name': 'Jane Doe', 'Buyer Phone': '03007654321', 'Return Reason': 'changed mind',
+    },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].orderNumber, 'ORD-1'); // Sale Order Number → Order Number
+  assert.equal(rows[0].sellerSku, 'SKU-X'); // Shop SKU → Seller SKU
+  assert.equal(rows[0].orderItemId, 'OL-1');
+  assert.equal(rows[0].status, 'Returned');
+  const serialized = JSON.stringify(rows);
+  for (const secret of ['Jane Doe', '03007654321', 'changed mind']) {
+    assert.equal(serialized.includes(secret), false, `discarded "${secret}" must not survive`);
+  }
+});
+
+test('mixed batch: Shipping + Delivered + Returned files combine to one line, newest status', () => {
+  const shipping = normaliseRawOrderRows([
+    { orderItemId: 'OL-1', orderNumber: 'ORD-1', sellerSku: 'SKU-X', itemName: 'W', createTime: '01 Jul 2026', status: 'Shipping', updateTime: '2026-07-01T10:00:00Z' },
+    { orderItemId: 'OL-2', orderNumber: 'ORD-2', sellerSku: 'SKU-X', itemName: 'W', createTime: '01 Jul 2026', status: 'Shipping', updateTime: '2026-07-01T10:00:00Z' },
+  ]);
+  const delivered = normaliseRawOrderRows([
+    { orderItemId: 'OL-1', orderNumber: 'ORD-1', sellerSku: 'SKU-X', itemName: 'W', createTime: '01 Jul 2026', status: 'Delivered', updateTime: '2026-07-03T10:00:00Z' },
+  ]);
+  const returned = normaliseRawOrderRows([
+    { 'Sale Order Number': 'ORD-1', 'Return Order Item ID': 'OL-1', 'Shop SKU': 'SKU-X', 'Product Name': 'W', 'Return Requested Date': '05 Jul 2026', 'Return Status': 'Returned', 'Update Time': '2026-07-05T10:00:00Z' },
+  ]);
+  const c = combineOrderRecords([...shipping, ...delivered, ...returned]);
+  assert.equal(c.records.length, 2); // OL-1 (returned), OL-2 (shipping)
+  const ol1 = c.records.find((r) => r.orderItemId === 'OL-1')!;
+  assert.equal(ol1.status, 'Returned'); // newest across all three files
+  assert.equal(c.byStatus.returned, 1);
+  assert.equal(c.byStatus.shipping, 1);
+});
+
+// --- unknown-format header-only diagnostic (column names only, no row values) --
+
+test('unknown format: readOrdersWorkbook error lists detected COLUMN NAMES, never row values', async () => {
+  const ExcelJS = (await import('exceljs')).default;
+  const { readOrdersWorkbook } = await import('../lib/daraz/xlsx');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('orders');
+  // A file that is NOT a recognised export: has an Order Line ID but nothing
+  // that maps to Order Number / Seller SKU / Product Name / Date / Status.
+  ws.addRow(['Order Line ID', 'Mystery Column', 'Buyer Full Name']);
+  ws.addRow(['OL-1', 'zzz', 'Jane Doe']); // "Jane Doe" is a ROW VALUE — must never leak
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  await assert.rejects(
+    readOrdersWorkbook(buf),
+    (e: unknown) => {
+      const msg = String((e as Error).message);
+      assert.match(msg, /Mystery Column/); // detected column names ARE shown
+      assert.match(msg, /Buyer Full Name/); // a column NAME (label) is fine to show
+      assert.match(msg, /Order Number|Seller SKU/); // names the missing fields
+      assert.equal(msg.includes('Jane Doe'), false); // a row VALUE is never shown
+      return true;
+    }
+  );
+});
+
 // --- integration: read a real raw .xlsx (with PII) and confirm it is stripped -
 
 test('raw xlsx: reading a raw workbook with PII columns keeps only permitted fields', async () => {
