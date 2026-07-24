@@ -11,48 +11,78 @@ import { prisma } from '@/lib/prisma';
 import { logAudit } from '@/lib/audit';
 import type { SessionUser } from '@/lib/auth';
 import { parseIncomeCsv, buildIncomeLines, parseDarazDate, type IncomeLine } from './parse';
-import { normaliseRawOrderRows, type SanitizedOrderRecord } from './sanitize';
+import {
+  normaliseRawOrderRows,
+  combineOrderRecords,
+  type SanitizedOrderRecord,
+  type RawOrderRecord,
+} from './sanitize';
 import { computeDryRun, dupKey, planIncomeLineWrites, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
 import { readOrdersWorkbook } from './xlsx';
 
+export interface OrdersFile {
+  buf: Buffer;
+  name: string;
+}
+
 export interface ParsedUpload {
   storeId: string;
-  orders: SanitizedOrderRecord[];
+  orders: SanitizedOrderRecord[]; // combined across all Orders files, one per Order Line ID
+  orderStats: {
+    byStatus: { shipping: number; delivered: number; returned: number; other: number };
+    mergedDuplicates: number;
+    fileCount: number;
+  };
   incomeLines: IncomeLine[];
-  ordersHash: string;
+  ordersHash: string; // combined hash of all Orders files
   incomeHash: string;
   fingerprint: string;
   incomeFeeRowCount: number;
-  ordersFileName: string;
+  ordersFileName: string; // joined names of all Orders files
   incomeFileName: string;
 }
 
-/** Parse both uploaded files into typed records + a store-scoped idempotency
- *  fingerprint. Orders are the sanitized, PII-free dataset. */
+/**
+ * Parse one or MANY raw Orders files (Shipping/Delivered/Returned) + the Income
+ * CSV into typed records and a store-scoped idempotency fingerprint. Each Orders
+ * file is parsed in memory with non-permitted/PII columns discarded, then all
+ * order rows are combined by Order Line ID (newest status wins). No raw/PII value
+ * is retained; the transient updateTime is dropped by the combine.
+ */
 export async function parseUpload(
-  ordersBuf: Buffer,
-  ordersFileName: string,
+  orderFiles: OrdersFile[],
   incomeText: string,
   incomeFileName: string,
   storeId: string
 ): Promise<ParsedUpload> {
-  // readOrdersWorkbook already drops non-permitted columns; normalise projects
-  // again (defence in depth) and derives quantity. No raw/PII value is retained.
-  const orders = normaliseRawOrderRows(await readOrdersWorkbook(ordersBuf));
+  const rawRecords: RawOrderRecord[] = [];
+  const orderHashes: string[] = [];
+  for (const f of orderFiles) {
+    rawRecords.push(...normaliseRawOrderRows(await readOrdersWorkbook(f.buf)));
+    orderHashes.push(sha256Hex(f.buf));
+  }
+  const combined = combineOrderRecords(rawRecords);
+
   const incomeFeeRows = parseIncomeCsv(incomeText);
   const incomeLines = buildIncomeLines(incomeFeeRows);
-  const ordersHash = sha256Hex(ordersBuf);
+  // Order-independent combined hash across all Orders files.
+  const ordersHash = sha256Hex([...orderHashes].sort().join(':'));
   const incomeHash = sha256Hex(incomeText);
   return {
     storeId,
-    orders,
+    orders: combined.records,
+    orderStats: {
+      byStatus: combined.byStatus,
+      mergedDuplicates: combined.mergedDuplicates,
+      fileCount: orderFiles.length,
+    },
     incomeLines,
     ordersHash,
     incomeHash,
     fingerprint: batchFingerprint(ordersHash, incomeHash, storeId),
     incomeFeeRowCount: incomeFeeRows.length,
-    ordersFileName,
+    ordersFileName: orderFiles.map((f) => f.name).join(', '),
     incomeFileName,
   };
 }
@@ -99,6 +129,7 @@ export async function buildPreview(parsed: ParsedUpload): Promise<PreviewOutput>
     products: products as LedgerProduct[],
     alreadyImported,
     existingOrderLineIds,
+    orderRowsMerged: parsed.orderStats.mergedDuplicates,
     batchAlreadyImported: !!existingBatch,
   });
 

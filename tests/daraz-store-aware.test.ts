@@ -11,7 +11,11 @@ import {
   validateRawOrderHeaders,
   normaliseRawOrderRows,
   planOrderLineWrites,
+  combineOrderRecords,
+  statusRank,
+  statusBucket,
   type SanitizedOrderRecord,
+  type RawOrderRecord,
 } from '../lib/daraz/sanitize';
 import {
   computeDryRun,
@@ -186,6 +190,62 @@ test('auto-discard: NO discarded PII value appears anywhere in the sanitized out
   for (const secret of ['Jane Doe', 'jane@x.com', '03007654321', 'Secret Street 42', 'TRK-SECRET', '03009999999']) {
     assert.equal(serialized.includes(secret), false, `discarded PII "${secret}" must not survive`);
   }
+});
+
+// --- multi-file combine by Order Line ID (Shipping → Delivered → Returned) ----
+
+const oline = (status: string, updateTime?: string, id = 'OL-1'): RawOrderRecord => ({
+  orderItemId: id, orderNumber: 'ORD-1', sellerSku: 'SKU-X', productName: 'W',
+  orderDate: '01 Jul 2026', status, quantity: 1, ...(updateTime ? { updateTime } : {}),
+});
+
+test('combine: same Order Line ID across Shipping→Delivered→Returned collapses to one (newest by updateTime)', () => {
+  const files = [
+    oline('Shipping', '2026-07-01T10:00:00Z'),
+    oline('Returned', '2026-07-05T10:00:00Z'),
+    oline('Delivered', '2026-07-03T10:00:00Z'),
+  ];
+  const c = combineOrderRecords(files);
+  assert.equal(c.records.length, 1);
+  assert.equal(c.records[0].status, 'Returned'); // newest updateTime wins
+  assert.equal(c.mergedDuplicates, 2);
+  assert.deepEqual(c.byStatus, { shipping: 0, delivered: 0, returned: 1, other: 0 });
+  assert.equal('updateTime' in c.records[0], false); // transient, never stored
+});
+
+test('combine: order of input does not matter — result is deterministic', () => {
+  const a = combineOrderRecords([oline('Shipping', '2026-07-01T10:00:00Z'), oline('Delivered', '2026-07-03T10:00:00Z')]);
+  const b = combineOrderRecords([oline('Delivered', '2026-07-03T10:00:00Z'), oline('Shipping', '2026-07-01T10:00:00Z')]);
+  assert.equal(a.records[0].status, 'Delivered');
+  assert.equal(b.records[0].status, 'Delivered');
+});
+
+test('combine: without updateTime, the later lifecycle status wins (Returned > Delivered > Shipping)', () => {
+  const c = combineOrderRecords([oline('Delivered'), oline('Shipping'), oline('Returned')]);
+  assert.equal(c.records.length, 1);
+  assert.equal(c.records[0].status, 'Returned');
+  assert.ok(statusRank('Returned') > statusRank('Delivered'));
+  assert.ok(statusRank('Delivered') > statusRank('Shipping'));
+  assert.equal(statusBucket('Delivered to buyer'), 'delivered');
+});
+
+test('combine: multiple files, distinct + shared lines — shared collapses, distinct kept', () => {
+  const shippingFile = [oline('Shipping', '2026-07-01T10:00:00Z', 'OL-1'), oline('Shipping', '2026-07-01T10:00:00Z', 'OL-2')];
+  const deliveredFile = [oline('Delivered', '2026-07-03T10:00:00Z', 'OL-1'), oline('Delivered', '2026-07-03T10:00:00Z', 'OL-3')];
+  const c = combineOrderRecords([...shippingFile, ...deliveredFile]);
+  assert.equal(c.records.length, 3); // OL-1, OL-2, OL-3
+  assert.equal(c.mergedDuplicates, 1); // OL-1 appeared twice
+  const ol1 = c.records.find((r) => r.orderItemId === 'OL-1')!;
+  assert.equal(ol1.status, 'Delivered'); // newest across files
+});
+
+test('combine: a later weekly re-upload updates the same line, not a duplicate (DB side is ON CONFLICT)', () => {
+  // Within one combine, and the dry-run then classifies it as an update vs stored.
+  const combined = combineOrderRecords([oline('Delivered', '2026-07-10T10:00:00Z', 'OL-9')]);
+  const plan = planOrderLineWrites(new Set(['OL-9']), combined.records); // OL-9 already stored
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.inserts.length, 0);
+  assert.equal(plan.updates[0].status, 'Delivered');
 });
 
 // --- integration: read a real raw .xlsx (with PII) and confirm it is stripped -

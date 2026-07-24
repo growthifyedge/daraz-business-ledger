@@ -28,28 +28,33 @@ export async function readUpload(req: Request): Promise<ParsedUpload> {
   } catch {
     throw new HttpError(400, 'Malformed upload.');
   }
-  const ordersFile = form.get('ordersFile');
+  // One or MANY Orders files (Shipping/Delivered/Returned) + one Income CSV.
+  const ordersFiles = form.getAll('ordersFile');
   const incomeFile = form.get('incomeFile');
   const storeId = String(form.get('storeId') ?? '').trim();
   if (!storeId) throw new HttpError(400, 'Select a store before uploading.');
+  if (ordersFiles.length === 0) throw new HttpError(400, 'Upload at least one Orders Excel file.');
   try {
-    validateUpload(ordersFile, 'orders');
+    for (const f of ordersFiles) validateUpload(f, 'orders');
     validateUpload(incomeFile, 'income');
   } catch (e) {
     if (e instanceof UploadError) throw new HttpError(413, e.message);
     throw new HttpError(400, 'Invalid upload.');
   }
   // Combined size guard (Vercel-safe) — belt-and-braces on top of per-file caps.
-  if (ordersFile.size + incomeFile.size > LIMITS.combinedMaxBytes) {
+  const ordersTotal = (ordersFiles as File[]).reduce((s, f) => s + f.size, 0);
+  if (ordersTotal + incomeFile.size > LIMITS.combinedMaxBytes) {
     throw new HttpError(413, 'Combined upload exceeds the 4 MB limit.');
   }
 
-  const ordersBuf = Buffer.from(await ordersFile.arrayBuffer());
+  const orderBufs = await Promise.all(
+    (ordersFiles as File[]).map(async (f) => ({ buf: Buffer.from(await f.arrayBuffer()), name: f.name }))
+  );
   const incomeText = new TextDecoder('utf-8').decode(await incomeFile.arrayBuffer());
   try {
-    return await parseUpload(ordersBuf, ordersFile.name, incomeText, incomeFile.name, storeId);
+    return await parseUpload(orderBufs, incomeText, incomeFile.name, storeId);
   } catch (e) {
     if (e instanceof UploadError) throw new HttpError(422, e.message);
-    throw new HttpError(422, 'Could not parse the uploaded files. Check they are the verified Daraz exports.');
+    throw new HttpError(422, 'Could not parse the uploaded files. Check they are the official Daraz exports.');
   }
 }

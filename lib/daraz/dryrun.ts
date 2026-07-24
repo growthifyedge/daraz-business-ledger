@@ -4,7 +4,7 @@
 
 import { ALL_FEE_CATEGORIES, sumByCategory, round2, type FeeCategory } from './fees';
 import type { IncomeLine } from './parse';
-import { planOrderLineWrites, type SanitizedOrderRecord } from './sanitize';
+import { planOrderLineWrites, statusBucket, type SanitizedOrderRecord } from './sanitize';
 
 export interface SkuMappingEntry {
   storeId: string;
@@ -31,6 +31,8 @@ export interface DryRunInput {
   alreadyImported: Set<string>;
   /** Order Line IDs (orderItemId) already stored — a re-upload updates, never duplicates. */
   existingOrderLineIds?: Set<string>;
+  /** Raw order rows merged away when combining multiple Orders files (same line). */
+  orderRowsMerged?: number;
   /** true when this exact (store + file pair) was already imported (batch fingerprint hit). */
   batchAlreadyImported: boolean;
 }
@@ -85,6 +87,10 @@ export interface DryRunResult {
     orderLinesNew: number;
     /** Order Line IDs already stored — updated in place (e.g. Shipping → Delivered), never duplicated. */
     orderLinesUpdated: number;
+    /** Final combined order lines by status bucket (across all uploaded files). */
+    ordersByStatus: { shipping: number; delivered: number; returned: number; other: number };
+    /** Raw rows collapsed when the same Order Line ID appeared in multiple files. */
+    orderRowsMerged: number;
     matched: number; // distinct income Order Item IDs with a matching order
     unmatched: number;
     duplicates: number;
@@ -285,6 +291,10 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
   // updates against what is already stored (Order Line ID is the key).
   const orderPlan = planOrderLineWrites(input.existingOrderLineIds ?? new Set(), input.orders);
 
+  // Preview counts by status bucket (across all combined Orders files).
+  const ordersByStatus = { shipping: 0, delivered: 0, returned: 0, other: 0 };
+  for (const o of input.orders) ordersByStatus[statusBucket(o.status)]++;
+
   const unresolvedSkuList = [...unresolvedAgg.entries()]
     .map(([sellerSku, v]) => ({ sellerSku, ...v }))
     .sort((a, b) => b.units - a.units);
@@ -342,6 +352,8 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
       orderItems: input.orders.length,
       orderLinesNew: orderPlan.inserts.length,
       orderLinesUpdated: orderPlan.updates.length,
+      ordersByStatus,
+      orderRowsMerged: input.orderRowsMerged ?? 0,
       matched,
       unmatched: distinctOrderItemIds - matched,
       duplicates,
