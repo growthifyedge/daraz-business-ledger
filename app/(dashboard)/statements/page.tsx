@@ -46,7 +46,7 @@ export default async function StatementsPage() {
         <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Daraz Statements</h1>
         <p className="mt-1 text-sm text-slate-500">
           Weekly settlement statements imported from Daraz Income. Every fee category is preserved.
-          Customer details are masked and require authorised reveal.
+          No customer, shipping, billing or tracking data is stored or shown.
         </p>
       </div>
 

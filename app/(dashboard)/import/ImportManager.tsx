@@ -5,7 +5,6 @@ import Link from 'next/link';
 import {
   UploadCloud,
   AlertTriangle,
-  Lock,
   CheckCircle2,
   ShieldCheck,
   Database,
@@ -54,9 +53,12 @@ interface PreviewMeta {
 
 interface CommitSummary {
   batchId: string;
+  storeId: string;
   orderItems: number;
-  customers: number;
+  orderLinesInserted: number;
+  orderLinesUpdated: number;
   incomeLines: number;
+  incomeLinesUpdated: number;
   fees: number;
   distinctOrderItemIds: number;
   statementCount: number;
@@ -72,12 +74,10 @@ interface StoreOpt {
 export function ImportManager({
   products,
   stores,
-  piiKeyReady,
   hasCommittedImport,
 }: {
   products: ProductOpt[];
   stores: StoreOpt[];
-  piiKeyReady: boolean;
   hasCommittedImport: boolean;
 }) {
   const [files, setFiles] = useState<{ orders: File | null; income: File | null }>({
@@ -98,6 +98,7 @@ export function ImportManager({
   const [storeId, setStoreId] = useState('');
 
   const r = preview?.result;
+  const storeName = stores.find((s) => s.id === storeId)?.name ?? '';
 
   // Mappings are per store, so a store change invalidates this session's saved
   // state (a SKU saved for one store is not "mapped" for another).
@@ -141,11 +142,16 @@ export function ImportManager({
   };
 
   function buildForm(): FormData | null {
+    if (!storeId) {
+      setError('Select a store first.');
+      return null;
+    }
     if (!files.orders || !files.income) {
-      setError('Select both the Orders .xlsx and the Income .csv.');
+      setError('Select both the sanitized Orders .xlsx and the Income .csv.');
       return null;
     }
     const fd = new FormData();
+    fd.append('storeId', storeId);
     fd.append('ordersFile', files.orders);
     fd.append('incomeFile', files.income);
     return fd;
@@ -198,34 +204,25 @@ export function ImportManager({
     <>
       <div className="mb-5">
         <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
-          Daraz Orders &amp; Income Import
+          Daraz Income Import
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Upload the <strong>All Orders</strong> Excel and the{' '}
-          <strong>Income Order Details</strong> CSV. Preview first; importing writes
-          statements, orders and encrypted customer data — but never posts stock, COGS or
-          P&amp;L until Seller SKUs are mapped.
+          Choose a store, then upload the <strong>sanitized Orders</strong> dataset (order
+          identifiers only) and the official <strong>Income Order Details</strong> CSV. Preview
+          first; importing records store-scoped orders and statements — but never posts stock,
+          COGS or P&amp;L, and never creates Purchases, Yahya debts or Sales.
         </p>
       </div>
 
-      <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <span>
-          Owner only. Customer, phone, national-ID, address and tracking data are
-          encrypted at rest (AES-256-GCM) and masked in the app — never logged, never
-          committed, never in audit values.
+          No customer data is accepted. The Orders file must contain only order identifiers
+          (Order Number, Order Line ID, Seller SKU, Product Name, Order Date, Order Status).
+          Files with names, emails, phones, addresses, national-ID, billing/shipping or tracking
+          columns are rejected — such data is never stored, encrypted, logged, or committed.
         </span>
       </div>
-
-      {!piiKeyReady && (
-        <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            <strong>PII encryption key not configured.</strong> Customer import is disabled
-            until <code>DARAZ_PII_KEY</code> is set in the environment.
-          </span>
-        </div>
-      )}
 
       <Card className="mb-5">
         <CardBody>
@@ -233,8 +230,26 @@ export function ImportManager({
             {error && (
               <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>
             )}
+            {/* Required store selector — no default. Dry-run and import are
+                disabled until a store is chosen. */}
+            <Field label="Store" required>
+              <Select value={storeId} onChange={(e) => changeStore(e.target.value)} className="sm:max-w-xs">
+                <option value="">— select store —</option>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {!storeId && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                Select the store this upload belongs to. Ashu Traderz and GrowthifyEdge are kept
+                fully separate — SKU mappings, orders and income never cross between them.
+              </p>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="All Orders export (.xlsx, ≤3 MB)" required>
+              <Field label="Sanitized Orders dataset (.xlsx, ≤3 MB)" required>
                 <Input
                   type="file"
                   accept=".xlsx"
@@ -250,7 +265,7 @@ export function ImportManager({
               </Field>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={runPreview} disabled={pending || committing}>
+              <Button onClick={runPreview} disabled={pending || committing || !storeId}>
                 <UploadCloud className="h-4 w-4" /> {pending ? 'Previewing…' : 'Run dry-run'}
               </Button>
             </div>
@@ -286,14 +301,14 @@ export function ImportManager({
 
           {/* --- what WILL and WON'T happen on import --- */}
           <Card className="mb-4">
-            <CardHeader title="What import will do" subtitle="Financial and customer records import now; inventory waits for mapping." />
+            <CardHeader title="What import will do" subtitle="Store-scoped orders and statements import now; inventory, P&L and Sales wait." />
             <CardBody className="grid gap-2 sm:grid-cols-3">
-              <PostureRow label="Financial statements imported" value="Yes" tone="ok" />
-              <PostureRow label="Orders / customers imported" value="Yes" tone="ok" />
+              <PostureRow label="Statements imported (store-scoped)" value="Yes" tone="ok" />
+              <PostureRow label="Sanitized order lines imported" value="Yes — no customer data" tone="ok" />
               <PostureRow
-                label="Inventory & P&L posted"
-                value={r.mappingComplete ? 'Yes' : 'No — waiting for product mapping'}
-                tone={r.mappingComplete ? 'ok' : 'wait'}
+                label="Stock / COGS / P&L / Sales posted"
+                value="No — never from this import"
+                tone="wait"
               />
             </CardBody>
           </Card>
@@ -388,26 +403,11 @@ export function ImportManager({
               <Card className="mb-4">
                 <CardHeader
                   title={`Unresolved Seller SKUs (${remaining.length})`}
-                  subtitle="Map each Seller SKU to a ledger product for the selected store. Mappings persist and apply on the next dry-run/import — this does not change stock, sales, COGS or P&L now. Multiple SKUs/variants may map to the same product."
+                  subtitle="Map each Seller SKU to a ledger product for the selected store. Mappings are per store (the same SKU can map to the same shared product in both stores) and apply on the next dry-run/import — this does not change stock, sales, COGS or P&L now."
                   action={
-                    <div className="flex items-center gap-2">
-                      <label htmlFor="mapping-store" className="text-xs font-medium text-slate-500">
-                        Store <span className="text-rose-500">*</span>
-                      </label>
-                      <Select
-                        id="mapping-store"
-                        value={storeId}
-                        onChange={(e) => changeStore(e.target.value)}
-                        className="min-w-[180px]"
-                      >
-                        <option value="">— select store —</option>
-                        {stores.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
+                    <span className="text-xs font-medium text-slate-500">
+                      Store: <span className="text-slate-800">{storeName || '—'}</span>
+                    </span>
                   }
                 />
                 <CardBody className="p-0">
@@ -565,7 +565,9 @@ export function ImportManager({
           <Card>
             <CardBody className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-slate-600">
-                Imports <strong>{formatNumber(r.totals.distinctOrderItemIds)}</strong> orders +{' '}
+                Imports into <strong>{storeName || 'the selected store'}</strong>:{' '}
+                <strong>{formatNumber(r.totals.orderLinesNew)}</strong> new order lines,{' '}
+                <strong>{formatNumber(r.totals.orderLinesUpdated)}</strong> updated,{' '}
                 <strong>{formatNumber(r.totals.incomeLines)}</strong> statement lines. Re-uploading
                 identical files is a safe no-op.
               </div>
@@ -573,14 +575,14 @@ export function ImportManager({
                 onClick={runCommit}
                 disabled={
                   committing ||
-                  !piiKeyReady ||
+                  !storeId ||
                   r.totals.reconDiff !== 0 ||
                   r.totals.unmatched > 0 ||
                   preview?.meta.alreadyCommitted
                 }
-                title={!piiKeyReady ? 'PII key not configured' : 'Import statements + orders + customers'}
+                title={!storeId ? 'Select a store first' : 'Import store-scoped orders + statements'}
               >
-                <Database className="h-4 w-4" /> {committing ? 'Importing…' : 'Import statements + orders'}
+                <Database className="h-4 w-4" /> {committing ? 'Importing…' : 'Import orders + statements'}
               </Button>
             </CardBody>
           </Card>

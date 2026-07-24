@@ -12,8 +12,17 @@ export function sha256Hex(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-/** Stable batch fingerprint from the two file content hashes (order-independent). */
-export function batchFingerprint(ordersFileHash: string, incomeFileHash: string): string {
+/**
+ * Stable batch fingerprint from the store and the two file content hashes. The
+ * two file hashes are order-independent; the storeId is included so the SAME
+ * file pair uploaded for a different store is a distinct batch (store isolation),
+ * while an identical re-upload for the same store stays a no-op.
+ */
+export function batchFingerprint(
+  ordersFileHash: string,
+  incomeFileHash: string,
+  storeId: string
+): string {
   const parts = [ordersFileHash, incomeFileHash].sort();
-  return sha256Hex(parts.join(':'));
+  return sha256Hex(`${storeId}:${parts.join(':')}`);
 }

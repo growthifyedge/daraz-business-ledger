@@ -3,9 +3,11 @@
 // items, it produces the full preview the Import page renders. It never writes.
 
 import { ALL_FEE_CATEGORIES, sumByCategory, round2, type FeeCategory } from './fees';
-import type { IncomeLine, OrderItemRecord } from './parse';
+import type { IncomeLine } from './parse';
+import { planOrderLineWrites, type SanitizedOrderRecord } from './sanitize';
 
 export interface SkuMappingEntry {
+  storeId: string;
   sellerSku: string;
   productId: string;
 }
@@ -18,13 +20,18 @@ export interface LedgerProduct {
 }
 
 export interface DryRunInput {
+  /** The store this import is scoped to. SKU resolution is per (storeId, sellerSku). */
+  storeId: string;
   incomeLines: IncomeLine[];
-  orders: OrderItemRecord[];
+  orders: SanitizedOrderRecord[];
+  /** All SKU mappings; only those for `storeId` are used to resolve. */
   skuMappings: SkuMappingEntry[];
   products: LedgerProduct[];
-  /** orderItemIds already present in the ledger (DarazIncomeLine) — duplicates. */
+  /** (orderItemId, statementNumber) keys already present (DarazIncomeLine) — duplicates. */
   alreadyImported: Set<string>;
-  /** true when this exact file pair was already imported (batch fingerprint hit). */
+  /** Order Line IDs (orderItemId) already stored — a re-upload updates, never duplicates. */
+  existingOrderLineIds?: Set<string>;
+  /** true when this exact (store + file pair) was already imported (batch fingerprint hit). */
   batchAlreadyImported: boolean;
 }
 
@@ -74,9 +81,17 @@ export interface DryRunResult {
     distinctOrderItemIds: number; // distinct income Order Item IDs
     statementCount: number; // distinct statement numbers
     orderItems: number;
+    /** Order Line IDs not yet stored — inserted on commit. */
+    orderLinesNew: number;
+    /** Order Line IDs already stored — updated in place (e.g. Shipping → Delivered), never duplicated. */
+    orderLinesUpdated: number;
     matched: number; // distinct income Order Item IDs with a matching order
     unmatched: number;
     duplicates: number;
+    /** Income lines whose (orderItemId, statementNumber) is new — inserted. */
+    incomeLinesNew: number;
+    /** Income lines already present — updated in place (revised figures + fees). */
+    incomeLinesUpdated: number;
     importable: number;
     blocked: number; // lines that cannot import (unresolved SKU / unmatched / dup)
     resolvedSkus: number;
@@ -118,9 +133,34 @@ export function dupKey(orderItemId: string, statementNumber: string): string {
   return `${orderItemId} ${statementNumber}`;
 }
 
+/**
+ * Split income lines into inserts vs updates by their composite key. A line whose
+ * (orderItemId, statementNumber) already exists is an UPDATE — Daraz revised its
+ * figures, so the stored line and its fees are refreshed rather than ignored.
+ * Pure — the commit performs the update + atomic fee replacement.
+ */
+export function planIncomeLineWrites<T extends { orderItemId: string; statementNumber: string }>(
+  existingKeys: Set<string>,
+  incomeLines: T[]
+): { inserts: T[]; updates: T[] } {
+  const inserts: T[] = [];
+  const updates: T[] = [];
+  for (const il of incomeLines) {
+    (existingKeys.has(dupKey(il.orderItemId, il.statementNumber)) ? updates : inserts).push(il);
+  }
+  return { inserts, updates };
+}
+
 export function computeDryRun(input: DryRunInput): DryRunResult {
   const orderById = new Map(input.orders.map((o) => [o.orderItemId, o]));
-  const skuToProduct = new Map(input.skuMappings.map((m) => [m.sellerSku, m.productId]));
+  // Store isolation: resolve SKUs ONLY against this store's mappings. The same
+  // Seller SKU may map to the same shared Product in the other store, but that
+  // mapping is invisible here.
+  const skuToProduct = new Map(
+    input.skuMappings
+      .filter((m) => m.storeId === input.storeId)
+      .map((m) => [m.sellerSku, m.productId])
+  );
   const productById = new Map(input.products.map((p) => [p.id, p]));
 
   const lines: PreviewLine[] = [];
@@ -168,11 +208,13 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
     const calcNet = round2(il.totalCredits + il.totalDeductions);
     const reconDiff = round2(calcNet - il.netAmount);
 
-    // A line is blocked (cannot import) if unmatched, duplicate, or SKU unresolved.
-    const blocked = !isMatched || isDuplicate || !skuResolved;
+    // A line is blocked (cannot import) if unmatched or its SKU is unresolved.
+    // An already-imported (orderItemId, statementNumber) is NOT blocked — it is
+    // updated in place when Daraz revises its figures (fees replaced atomically).
+    const blocked = !isMatched || !skuResolved;
     if (!skuResolved) {
       const agg = unresolvedAgg.get(sku) ?? {
-        productName: il.productName || order?.itemName || '',
+        productName: il.productName || order?.productName || '',
         lines: 0,
         units: 0,
       };
@@ -215,7 +257,7 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
       statementNumber: il.statementNumber,
       orderNumber: il.orderNumber || order?.orderNumber || '',
       sellerSku: sku,
-      productName: il.productName || order?.itemName || '',
+      productName: il.productName || order?.productName || '',
       orderStatus: il.orderStatus || order?.status || '',
       matched: isMatched,
       units: 1,
@@ -238,6 +280,10 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
   const distinctOrderItemIds = distinctOrderIds.size;
   const matched = matchedOrderIds.size;
   const units = distinctOrderItemIds; // one physical unit per distinct order item
+
+  // Order-line idempotency: split incoming order lines into inserts vs in-place
+  // updates against what is already stored (Order Line ID is the key).
+  const orderPlan = planOrderLineWrites(input.existingOrderLineIds ?? new Set(), input.orders);
 
   const unresolvedSkuList = [...unresolvedAgg.entries()]
     .map(([sellerSku, v]) => ({ sellerSku, ...v }))
@@ -294,9 +340,13 @@ export function computeDryRun(input: DryRunInput): DryRunResult {
       distinctOrderItemIds,
       statementCount: statementNumbers.size,
       orderItems: input.orders.length,
+      orderLinesNew: orderPlan.inserts.length,
+      orderLinesUpdated: orderPlan.updates.length,
       matched,
       unmatched: distinctOrderItemIds - matched,
       duplicates,
+      incomeLinesNew: input.incomeLines.length - duplicates,
+      incomeLinesUpdated: duplicates,
       importable,
       blocked: lines.filter((l) => l.blocked).length,
       resolvedSkus: resolvedSkus.size,

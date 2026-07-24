@@ -4,15 +4,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Test-only PII key (synthetic — NOT a real key). Set before importing crypto.
-process.env.DARAZ_PII_KEY ||= Buffer.alloc(32, 7).toString('base64');
-
 import { ALL_FEE_CATEGORIES, categoriseFee, toCategorisedFee, sumByCategory } from '../lib/daraz/fees';
+import { parseIncomeCsv, buildIncomeLines } from '../lib/daraz/parse';
 import {
-  parseIncomeCsv,
-  buildIncomeLines,
-  normaliseOrderRows,
-} from '../lib/daraz/parse';
+  normaliseSanitizedOrderRows,
+  validateSanitizedOrderHeaders,
+  planOrderLineWrites,
+  type SanitizedOrderRecord,
+} from '../lib/daraz/sanitize';
 import {
   computeDryRun,
   dupKey,
@@ -22,8 +21,6 @@ import {
 } from '../lib/daraz/dryrun';
 import { summariseStatements } from '../lib/daraz/statements';
 import { batchFingerprint, sha256Hex } from '../lib/daraz/fingerprint';
-import { maskPhone, maskNationalId, maskEmail, maskCustomer } from '../lib/daraz/mask';
-import { encryptPii, decryptPii, blindIndex } from '../lib/daraz/crypto';
 import { refundCountsInPnl, sellerLossForPnl, isEligibleForPnl } from '../lib/returns';
 
 // Narrowing helpers: stock/COGS become "unavailable" (a string) until every SKU
@@ -73,48 +70,32 @@ const CSV = [
   ...OI2_FEES.map(([f, a]) => feeRow('OI-2', 'SKU-B', f, a, 'Returned', 'ORD-2')),
 ].join('\n');
 
-const ORDER_ROWS = [
-  {
-    orderItemId: 'OI-1',
-    orderNumber: 'ORD-1',
-    sellerSku: 'SKU-A',
-    itemName: 'Test Product SKU-A',
-    unitPrice: '396',
-    paidPrice: '396',
-    status: 'delivered',
-    createTime: '01 Jul 2026',
-    customerName: 'Synthetic Buyer One',
-    customerEmail: 'buyer1@example.com',
-    nationalRegistrationNumber: '3520212345671',
-    shippingName: 'Synthetic Buyer One',
-    shippingAddress: 'House 1',
-    shippingPhone: '03001234852',
-    shippingCity: 'Lahore',
-  },
-  {
-    orderItemId: 'OI-2',
-    orderNumber: 'ORD-2',
-    sellerSku: 'SKU-B',
-    itemName: 'Test Product SKU-B',
-    unitPrice: '300',
-    paidPrice: '300',
-    status: 'returned',
-    createTime: '01 Jul 2026',
-    customerName: 'Synthetic Buyer Two',
-    customerEmail: 'buyer2@example.com',
-    nationalRegistrationNumber: '3520298765432',
-    shippingPhone: '03007654321',
-    shippingCity: 'Karachi',
-  },
-];
+// Sanitized, PII-free order lines — the Phase 4 shape (SanitizedOrderRecord).
+const STORE = 'store-ashu';
+const sOrder = (
+  orderItemId: string,
+  sellerSku: string,
+  status = 'Delivered',
+  orderNumber = 'ORD-1',
+  productName = `Test Product ${sellerSku}`
+): SanitizedOrderRecord => ({
+  orderItemId,
+  orderNumber,
+  sellerSku,
+  productName,
+  orderDate: '01 Jul 2026',
+  status,
+  quantity: 1,
+});
+const ORDERS: SanitizedOrderRecord[] = [sOrder('OI-1', 'SKU-A'), sOrder('OI-2', 'SKU-B', 'returned', 'ORD-2')];
 
 const PRODUCTS: LedgerProduct[] = [
   { id: 'p-a', sku: 'LED-A', name: 'Ledger A', currentStock: 5, purchaseCost: 100 },
   { id: 'p-b', sku: 'LED-B', name: 'Ledger B', currentStock: 0, purchaseCost: 80 },
 ];
 const MAPPINGS = [
-  { sellerSku: 'SKU-A', productId: 'p-a' },
-  { sellerSku: 'SKU-B', productId: 'p-b' },
+  { storeId: STORE, sellerSku: 'SKU-A', productId: 'p-a' },
+  { storeId: STORE, sellerSku: 'SKU-B', productId: 'p-b' },
 ];
 
 // ===========================================================================
@@ -132,14 +113,17 @@ test('parse: income CSV skips banner/blank, reads header, parses fee rows', () =
   assert.equal(first.statementNumber, 'ST-1');
 });
 
-test('parse: order rows normalise to one unit per orderItemId', () => {
-  const orders = normaliseOrderRows(ORDER_ROWS);
+test('parse: sanitized order rows normalise to one unit per Order Line ID', () => {
+  const orders = normaliseSanitizedOrderRows([
+    { 'Order Line ID': 'OI-1', 'Order Number': 'ORD-1', 'Seller SKU': 'SKU-A', 'Product Name': 'P A', 'Order Date': '01 Jul 2026', 'Order Status': 'Delivered' },
+    { 'Order Line ID': 'OI-2', 'Order Number': 'ORD-2', 'Seller SKU': 'SKU-B', 'Product Name': 'P B', 'Order Date': '01 Jul 2026', 'Order Status': 'Shipping' },
+  ]);
   assert.equal(orders.length, 2);
   assert.equal(orders[0].quantity, 1);
-  assert.equal(orders[1].quantity, 1);
   assert.equal(orders[0].orderItemId, 'OI-1');
-  // PII carried through for secure storage
-  assert.equal(orders[0].shippingPhone, '03001234852');
+  assert.equal(orders[0].productName, 'P A');
+  // No PII fields exist on the sanitized record at all.
+  assert.equal('shippingPhone' in orders[0], false);
 });
 
 // ===========================================================================
@@ -214,10 +198,10 @@ test('income line: return line with refund+reversal nets correctly', () => {
 
 function dryRun(opts: Partial<Parameters<typeof computeDryRun>[0]> = {}) {
   const incomeLines = buildIncomeLines(parseIncomeCsv(CSV));
-  const orders = normaliseOrderRows(ORDER_ROWS);
   return computeDryRun({
+    storeId: STORE,
     incomeLines,
-    orders,
+    orders: ORDERS,
     skuMappings: MAPPINGS,
     products: PRODUCTS,
     alreadyImported: new Set(),
@@ -234,7 +218,7 @@ test('join: matched lines by orderItemId', () => {
 });
 
 test('join: an income line with no order is unmatched', () => {
-  const orders = normaliseOrderRows([ORDER_ROWS[0]]); // only OI-1
+  const orders = [ORDERS[0]]; // only OI-1
   const r = dryRun({ orders });
   assert.equal(r.totals.matched, 1);
   assert.equal(r.totals.unmatched, 1);
@@ -242,7 +226,7 @@ test('join: an income line with no order is unmatched', () => {
 });
 
 test('sku mapping: resolved when mapping exists, blocked when missing (never guessed)', () => {
-  const r = dryRun({ skuMappings: [{ sellerSku: 'SKU-A', productId: 'p-a' }] }); // SKU-B unmapped
+  const r = dryRun({ skuMappings: [{ storeId: STORE, sellerSku: 'SKU-A', productId: 'p-a' }] }); // SKU-B unmapped
   const a = r.lines.find((l) => l.orderItemId === 'OI-1')!;
   const b = r.lines.find((l) => l.orderItemId === 'OI-2')!;
   assert.equal(a.skuResolved, true);
@@ -258,12 +242,16 @@ test('sku mapping: resolved when mapping exists, blocked when missing (never gue
   );
 });
 
-test('duplicates: already-imported (orderItemId, statementNumber) flagged, excluded from importable', () => {
+test('duplicates: already-imported (orderItemId, statementNumber) is flagged and updated in place', () => {
   const r = dryRun({ alreadyImported: new Set([dupKey('OI-1', 'ST-1')]) });
   assert.equal(r.totals.duplicates, 1);
-  assert.equal(r.lines.find((l) => l.orderItemId === 'OI-1')!.isDuplicate, true);
-  // OI-1 delivered+resolved but duplicate → not importable; OI-2 returned+resolved
-  assert.equal(r.totals.importable, 1);
+  assert.equal(r.totals.incomeLinesUpdated, 1); // revised → updated, not ignored
+  assert.equal(r.totals.incomeLinesNew, 1); // OI-2 is new
+  const oi1 = r.lines.find((l) => l.orderItemId === 'OI-1')!;
+  assert.equal(oi1.isDuplicate, true);
+  assert.equal(oi1.blocked, false); // no longer blocked — it updates in place
+  // Both lines are importable now (one insert, one update).
+  assert.equal(r.totals.importable, 2);
 });
 
 test('reconciliation: every line reconciles and totals match Daraz net exactly', () => {
@@ -303,7 +291,7 @@ test('stock: delivered resolved unit deducts stock; returned unit does not', () 
 });
 
 test('stock: delivered unit against zero stock is a negative-stock blocker', () => {
-  const orders = normaliseOrderRows([{ ...ORDER_ROWS[1], status: 'delivered' }]); // OI-2 delivered
+  const orders = [sOrder('OI-2', 'SKU-B', 'Delivered', 'ORD-2')]; // OI-2 delivered
   const incomeLines = buildIncomeLines(
     parseIncomeCsv(
       [
@@ -315,6 +303,7 @@ test('stock: delivered unit against zero stock is a negative-stock blocker', () 
     )
   );
   const r = computeDryRun({
+    storeId: STORE,
     incomeLines,
     orders,
     skuMappings: MAPPINGS,
@@ -339,14 +328,16 @@ test('COGS: projected from delivered units × product purchase cost', () => {
 // 6. Idempotency fingerprint
 // ===========================================================================
 
-test('idempotency: batch fingerprint is stable and order-independent', () => {
+test('idempotency: batch fingerprint is stable, order-independent, store-scoped', () => {
   const a = sha256Hex('orders-bytes');
   const b = sha256Hex('income-bytes');
-  const f1 = batchFingerprint(a, b);
-  const f2 = batchFingerprint(b, a);
-  assert.equal(f1, f2); // order-independent
-  assert.equal(f1, batchFingerprint(a, b)); // stable
-  assert.notEqual(f1, batchFingerprint(a, sha256Hex('different-income')));
+  const f1 = batchFingerprint(a, b, STORE);
+  const f2 = batchFingerprint(b, a, STORE);
+  assert.equal(f1, f2); // file order-independent
+  assert.equal(f1, batchFingerprint(a, b, STORE)); // stable
+  assert.notEqual(f1, batchFingerprint(a, sha256Hex('different-income'), STORE));
+  // Same files, different store → a DIFFERENT batch (store isolation).
+  assert.notEqual(f1, batchFingerprint(a, b, 'store-ge'));
 });
 
 test('idempotency: same file pair flagged as already-imported', () => {
@@ -355,35 +346,7 @@ test('idempotency: same file pair flagged as already-imported', () => {
 });
 
 // ===========================================================================
-// 7. Customer masking
-// ===========================================================================
-
-test('masking: phone and national id are masked to last 3 by default', () => {
-  assert.equal(maskPhone('03001234852'), '••••••••852');
-  assert.equal(maskNationalId('3520212345671'), '••••••••••671');
-  assert.equal(maskPhone(''), '');
-  assert.equal(maskPhone(null), '');
-});
-
-test('masking: email keeps first char + domain', () => {
-  assert.equal(maskEmail('ahmed@example.com'), 'a••••@example.com');
-});
-
-test('masking: maskCustomer never exposes full phone/national id', () => {
-  const m = maskCustomer({
-    name: 'Synthetic Buyer',
-    email: 'buyer@example.com',
-    phone: '03001234852',
-    nationalRegistrationNumber: '3520212345671',
-  });
-  assert.equal(m.name, 'Synthetic Buyer'); // name shown to owner/admin
-  assert.ok(!m.phoneMasked.includes('0300'));
-  assert.ok(m.phoneMasked.endsWith('852'));
-  assert.ok(!m.nationalIdMasked.includes('35202'));
-});
-
-// ===========================================================================
-// 8. Unresolved SKU is an import blocker — NOT a zero-impact success
+// 7. Unresolved SKU is an import blocker — NOT a zero-impact success
 // ===========================================================================
 
 test('unresolved SKU: stock/COGS/profit are unavailable, not zero, while any SKU is unmapped', () => {
@@ -403,7 +366,7 @@ test('unresolved SKU: stock/COGS/profit are unavailable, not zero, while any SKU
 });
 
 test('unresolved SKU: a partial mapping still blocks projections (all-or-nothing)', () => {
-  const r = dryRun({ skuMappings: [{ sellerSku: 'SKU-A', productId: 'p-a' }] }); // SKU-B unmapped
+  const r = dryRun({ skuMappings: [{ storeId: STORE, sellerSku: 'SKU-A', productId: 'p-a' }] }); // SKU-B unmapped
   assert.equal(r.mappingComplete, false);
   assert.equal(r.stockProjectionAvailable, false);
   assert.equal(typeof r.totals.projectedCOGS, 'string');
@@ -462,51 +425,7 @@ test('refund rule: an unlinked/manual return keeps existing eligibility behaviou
 });
 
 // ===========================================================================
-// 11. PII encryption — AES-256-GCM + blind index
-// ===========================================================================
-
-test('crypto: encrypt→decrypt round-trips and ciphertext is never plaintext', () => {
-  const plain = 'Synthetic Buyer, House 1, Lahore';
-  const enc = encryptPii(plain);
-  assert.ok(enc && enc.startsWith('v1:'));
-  assert.ok(!enc.includes(plain)); // stored value is not readable plaintext
-  assert.equal(decryptPii(enc), plain);
-  assert.equal(encryptPii(null), null);
-  assert.equal(encryptPii(''), null);
-  assert.equal(decryptPii(null), null);
-});
-
-test('crypto: same plaintext encrypts differently each time but decrypts equal (random IV)', () => {
-  const p = '03001234852';
-  const a = encryptPii(p)!;
-  const b = encryptPii(p)!;
-  assert.notEqual(a, b);
-  assert.equal(decryptPii(a), decryptPii(b));
-});
-
-test('crypto: tampering with ciphertext is detected (GCM auth) and throws', () => {
-  const enc = encryptPii('3520212345671')!;
-  const parts = enc.split(':');
-  // Flip a byte in the ciphertext segment.
-  const ct = Buffer.from(parts[3], 'base64');
-  ct[0] ^= 0xff;
-  const tampered = [parts[0], parts[1], parts[2], ct.toString('base64')].join(':');
-  assert.throws(() => decryptPii(tampered));
-  assert.throws(() => decryptPii('v1:not:valid'));
-});
-
-test('crypto: blind index is deterministic, normalised, one-way and non-plaintext', () => {
-  const h1 = blindIndex('0300 123 4852')!;
-  const h2 = blindIndex('03001234852')!; // whitespace-insensitive
-  assert.equal(h1, h2);
-  assert.match(h1, /^[0-9a-f]{64}$/); // HMAC-SHA256 hex
-  assert.ok(!h1.includes('03001234852')); // reveals no plaintext
-  assert.notEqual(blindIndex('03001234852'), blindIndex('03009999999'));
-  assert.equal(blindIndex(null), null);
-});
-
-// ===========================================================================
-// 12. Composite statement identity — one Order Item ID in two statements
+// 11. Composite statement identity — one Order Item ID in two statements
 // ===========================================================================
 
 // A single fee row with an explicit statement number.
@@ -527,10 +446,9 @@ test('composite identity: one Order Item ID across two statements yields two dis
   assert.deepEqual(lines.map((l) => l.statementNumber).sort(), ['026', '027']);
   assert.ok(lines.every((l) => l.orderItemId === 'OI-9'));
 
-  const orders = normaliseOrderRows([
-    { orderItemId: 'OI-9', orderNumber: 'ORD-9', sellerSku: 'SKU-A', status: 'returned' },
-  ]);
+  const orders = [sOrder('OI-9', 'SKU-A', 'returned', 'ORD-9')];
   const r = computeDryRun({
+    storeId: STORE,
     incomeLines: lines,
     orders,
     skuMappings: [],
@@ -548,10 +466,9 @@ test('composite identity: one Order Item ID across two statements yields two dis
 
 test('composite identity: duplicate detection is per (orderItemId, statementNumber)', () => {
   const lines = buildIncomeLines(parseIncomeCsv(TWO_STMT_CSV));
-  const orders = normaliseOrderRows([
-    { orderItemId: 'OI-9', orderNumber: 'ORD-9', sellerSku: 'SKU-A', status: 'returned' },
-  ]);
+  const orders = [sOrder('OI-9', 'SKU-A', 'returned', 'ORD-9')];
   const r = computeDryRun({
+    storeId: STORE,
     incomeLines: lines,
     orders,
     skuMappings: [],

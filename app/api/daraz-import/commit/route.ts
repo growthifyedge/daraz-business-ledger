@@ -1,5 +1,6 @@
-// POST /api/daraz-import/commit — owner-only atomic import. Writes statements,
-// orders and encrypted customers. Posts NO stock/COGS/P&L.
+// POST /api/daraz-import/commit — owner-only atomic import for the selected
+// store. Writes store-tagged statements + sanitized order lines only. NO customer
+// data of any kind. Posts NO stock/COGS/P&L.
 import { NextResponse } from 'next/server';
 import { commitImport } from '@/lib/daraz/persist';
 import { requireOwnerApi, readUpload, HttpError } from '../_shared';
