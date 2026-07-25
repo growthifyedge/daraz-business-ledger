@@ -50,7 +50,10 @@ export default async function ProfitLossPage({
     { item: 'Returns / Refunds', amount: -fin.returnsRefunds },
     { item: 'Operating Expenses', amount: -fin.operatingExpenses },
     { item: 'Accessories Consumed', amount: -fin.accessoriesConsumed },
-    { item: 'NET PROFIT', amount: fin.netProfit },
+    { item: 'NET PROFIT (Manual)', amount: fin.netProfit },
+    { item: 'Daraz Import — net', amount: fin.daraz.net },
+    { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
+    { item: 'REAL COMBINED NET', amount: fin.combinedNetProfit },
     { item: `Yahya Share (${yahyaPct}%)`, amount: fin.yahyaShare },
     { item: `Owner Share (${ownerPct}%)`, amount: fin.ownerShare },
   ];
@@ -146,20 +149,20 @@ export default async function ProfitLossPage({
         <div className="flex flex-col gap-3">
           <Card
             className={
-              netPositive
+              fin.combinedNetProfit >= 0
                 ? 'border-emerald-100 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
                 : 'border-rose-100 bg-gradient-to-br from-rose-500 to-rose-600 text-white'
             }
           >
             <CardBody>
               <p className="text-xs font-medium uppercase tracking-wide text-white/80">
-                Net Profit
+                Real Combined Net Profit
               </p>
               <p className="mt-1 text-3xl font-bold tabular-nums">
-                {formatMoney(fin.netProfit)}
+                {formatMoney(fin.combinedNetProfit)}
               </p>
               <p className="mt-1 text-xs text-white/80">
-                After all deductions · {label}
+                Manual net {formatMoney(fin.netProfit)} + Daraz net − est. COGS · {label}
               </p>
             </CardBody>
           </Card>
@@ -167,20 +170,20 @@ export default async function ProfitLossPage({
           <StatCard
             label={`Yahya Share (${yahyaPct}%)`}
             value={formatMoney(fin.yahyaShare)}
-            hint={`${yahyaPct}% of net profit`}
+            hint={`${yahyaPct}% of real combined net`}
             icon={<Users size={18} />}
             tone="brand"
           />
           <StatCard
             label={`Owner Share (${ownerPct}%)`}
             value={formatMoney(fin.ownerShare)}
-            hint={`${ownerPct}% of net profit`}
+            hint={`${ownerPct}% of real combined net`}
             icon={<Wallet size={18} />}
             tone="brand"
           />
           <p className="px-1 text-xs text-slate-400">
-            Net profit is split {yahyaPct}/{ownerPct} between Yahya and the
-            Owner.
+            The {yahyaPct}/{ownerPct} split now applies to the real combined net
+            (manual + Daraz − estimated Daraz COGS).
           </p>
         </div>
       </div>
@@ -190,12 +193,27 @@ export default async function ProfitLossPage({
         <div className="lg:col-span-2">
           <DarazIncomeCard rollup={fin.daraz} subtitle={`Imported Daraz income · ${label}`} />
         </div>
-        <StatCard
-          label="Combined net (Manual + Daraz)"
-          value={formatMoney(fin.netProfit + fin.daraz.net)}
-          hint="Manual net profit + Daraz net income"
-          tone="brand"
-        />
+        <div className="flex flex-col gap-3">
+          <StatCard
+            label="Estimated Daraz COGS"
+            value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
+            hint={`Delivered only · ${formatNumber(fin.darazCogs.costedUnits)}/${formatNumber(fin.darazCogs.deliveredUnits)} units costed (${fin.darazCogs.coveragePct}%)`}
+            tone="negative"
+          />
+          <StatCard
+            label="Real combined net"
+            value={formatMoney(fin.combinedNetProfit)}
+            hint="Manual net + Daraz net − est. Daraz COGS"
+            tone="brand"
+          />
+          {(fin.darazCogs.unmappedUnits > 0 || fin.darazCogs.missingCostUnits > 0) && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              Estimated: {formatNumber(fin.darazCogs.unmappedUnits)} delivered unit(s) unmapped,{' '}
+              {formatNumber(fin.darazCogs.missingCostUnits)} mapped but no cost — excluded from COGS.
+              Historic purchase lots are incomplete, so this is an estimate (flat purchase cost, no FIFO).
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Methodology note */}

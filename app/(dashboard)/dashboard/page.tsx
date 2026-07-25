@@ -112,17 +112,23 @@ export default async function DashboardPage() {
           icon={<Receipt size={18} />}
         />
         <StatCard
-          label="Gross Profit"
-          value={formatMoneyCompact(fin.grossProfit)}
-          hint="Sales − product cost"
-          tone={fin.grossProfit >= 0 ? 'positive' : 'negative'}
+          label="Manual Net Profit"
+          value={formatMoneyCompact(fin.netProfit)}
+          hint="Manual channel, after all costs"
+          tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
         />
         <StatCard
-          label="Net Profit"
-          value={formatMoneyCompact(fin.netProfit)}
-          hint="After all costs"
+          label="Est. Daraz COGS"
+          value={`− ${formatMoneyCompact(fin.estimatedDarazCogs)}`}
+          hint={`Delivered · ${formatNumber(fin.darazCogs.coveragePct)}% costed`}
+          tone="negative"
+        />
+        <StatCard
+          label="Real Combined Net"
+          value={formatMoneyCompact(fin.combinedNetProfit)}
+          hint="Manual + Daraz net − est. COGS"
           icon={<PieChart size={18} />}
-          tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
+          tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
         />
         <StatCard
           label="Yahya Share (50%)"

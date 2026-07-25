@@ -1,7 +1,16 @@
 // Phase 1 tests for the pure Daraz income roll-up. No DB, no wiring.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rollUpDarazIncome, isReleased, type IncomeLineForRollup } from '../lib/daraz/income';
+import {
+  rollUpDarazIncome,
+  isReleased,
+  estimateDarazCogs,
+  isDeliveredExact,
+  type IncomeLineForRollup,
+  type DeliveredOrderLine,
+  type SkuMappingRow,
+  type ProductCostRow,
+} from '../lib/daraz/income';
 import type { FeeCategory } from '../lib/daraz/fees';
 import { sellerLossForPnl } from '../lib/returns';
 
@@ -151,4 +160,107 @@ test('isReleased: only truly Released statuses count for Cash Flow', () => {
   assert.equal(isReleased('Pending'), false);
   assert.equal(isReleased(null), false);
   assert.equal(isReleased(''), false);
+});
+
+// --- Estimated Daraz COGS -----------------------------------------------------
+
+const MAPPINGS: SkuMappingRow[] = [
+  { storeId: 'ashu', sellerSku: 'SKU-A', productId: 'p-a' },
+  { storeId: 'ashu', sellerSku: 'SKU-B', productId: 'p-b' }, // mapped but no cost
+  { storeId: 'ge', sellerSku: 'SKU-A', productId: 'p-a' },
+];
+const PRODUCTS: ProductCostRow[] = [
+  { id: 'p-a', purchaseCost: 100 },
+  { id: 'p-b', purchaseCost: 0 }, // missing cost
+];
+const dline = (
+  sellerSku: string, status: string, storeId = 'ashu', orderDate: string | null = '2026-07-05', quantity = 1
+): DeliveredOrderLine => ({ storeId, sellerSku, status, orderDate, quantity });
+
+test('cogs: costs EXACTLY Delivered lines only (excludes shipping/shipped/returned/cancelled/failed)', () => {
+  const c = estimateDarazCogs(
+    [
+      dline('SKU-A', 'delivered'),
+      dline('SKU-A', 'Delivered'), // case-insensitive exact
+      dline('SKU-A', 'Shipping'),
+      dline('SKU-A', 'shipped'),
+      dline('SKU-A', 'returned'),
+      dline('SKU-A', 'canceled'),
+      dline('SKU-A', 'Buyer Delivery Failed'), // contains "deliver" but NOT delivered
+      dline('SKU-A', 'In Transit: Returning to seller'),
+    ],
+    MAPPINGS,
+    PRODUCTS
+  );
+  assert.equal(c.deliveredUnits, 2); // only the two exact "delivered"
+  assert.equal(c.costedUnits, 2);
+  assert.equal(c.estimatedCogs, 200);
+});
+
+test('cogs: isDeliveredExact matches only "delivered"', () => {
+  assert.equal(isDeliveredExact('delivered'), true);
+  assert.equal(isDeliveredExact('Delivered'), true);
+  assert.equal(isDeliveredExact('Buyer Delivery Failed'), false);
+  assert.equal(isDeliveredExact('shipped'), false);
+  assert.equal(isDeliveredExact('returned'), false);
+  assert.equal(isDeliveredExact(null), false);
+});
+
+test('cogs: coverage — mapped/costed units, missing mapping, missing cost', () => {
+  const c = estimateDarazCogs(
+    [
+      dline('SKU-A', 'delivered'), // mapped + cost → costed
+      dline('SKU-B', 'delivered'), // mapped, cost 0 → missing cost
+      dline('SKU-X', 'delivered'), // no mapping → unmapped
+    ],
+    MAPPINGS,
+    PRODUCTS
+  );
+  assert.equal(c.deliveredUnits, 3);
+  assert.equal(c.mappedUnits, 2);
+  assert.equal(c.unmappedUnits, 1);
+  assert.equal(c.costedUnits, 1);
+  assert.equal(c.missingCostUnits, 1);
+  assert.equal(c.estimatedCogs, 100); // only the costed unit
+  assert.deepEqual(c.unmappedSkus, ['SKU-X']);
+  assert.equal(c.coveragePct, 33.33); // 1/3
+});
+
+test('cogs: store + date scope', () => {
+  const lines = [
+    dline('SKU-A', 'delivered', 'ashu', '2026-07-05'),
+    dline('SKU-A', 'delivered', 'ge', '2026-07-05'), // other store
+    dline('SKU-A', 'delivered', 'ashu', '2026-06-01'), // out of range
+    dline('SKU-A', 'delivered', 'ashu', null), // undated → excluded when filtered
+  ];
+  const c = estimateDarazCogs(lines, MAPPINGS, PRODUCTS, {
+    storeId: 'ashu', from: new Date('2026-07-01'), to: new Date('2026-07-31T23:59:59.999Z'),
+  });
+  assert.equal(c.deliveredUnits, 1); // only ashu, in July, dated
+  assert.equal(c.estimatedCogs, 100);
+});
+
+test('cogs: pure — no writes, inputs not mutated (no stock/product/purchase change)', () => {
+  const products = [{ id: 'p-a', purchaseCost: 100 }];
+  const mappings = [{ storeId: 'ashu', sellerSku: 'SKU-A', productId: 'p-a' }];
+  const pSnap = JSON.stringify(products);
+  const mSnap = JSON.stringify(mappings);
+  const lines = [dline('SKU-A', 'delivered')];
+  const lSnap = JSON.stringify(lines);
+  estimateDarazCogs(lines, mappings, products);
+  assert.equal(JSON.stringify(products), pSnap); // product cost/stock untouched
+  assert.equal(JSON.stringify(mappings), mSnap);
+  assert.equal(JSON.stringify(lines), lSnap);
+});
+
+test('cogs: profit reconciliation — combined = manual net + Daraz net − est. COGS', () => {
+  const rollup = rollUpDarazIncome([
+    { statementNumber: 'ST-1', orderItemId: 'OL-1', netAmount: 697, fees: [fee('PRODUCT_REVENUE', 1000), fee('COMMISSION', -100), fee('REFUND', -203)] },
+  ]);
+  const cogs = estimateDarazCogs([dline('SKU-A', 'delivered')], MAPPINGS, PRODUCTS);
+  const manualNet = 500;
+  const combined = manualNet + rollup.net - cogs.estimatedCogs;
+  assert.equal(rollup.net, 697);
+  assert.equal(cogs.estimatedCogs, 100);
+  assert.equal(combined, 1097); // 500 + 697 − 100
 });

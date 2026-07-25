@@ -53,7 +53,8 @@ export default async function ProfitReportPage({
     { item: 'Daraz Import — taxes withheld', amount: fin.daraz.taxesWithheld },
     { item: 'Daraz Import — refunds', amount: fin.daraz.refunds },
     { item: 'Daraz Import — net', amount: fin.daraz.net },
-    { item: 'Combined Net (Manual + Daraz)', amount: fin.netProfit + fin.daraz.net },
+    { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
+    { item: 'Real Combined Net (Manual + Daraz − est. COGS)', amount: fin.combinedNetProfit },
     { item: 'Yahya Share (50%)', amount: fin.yahyaShare },
     { item: 'Owner Share (50%)', amount: fin.ownerShare },
   ];
@@ -81,11 +82,12 @@ export default async function ProfitReportPage({
           value={formatMoney(fin.netProfit)}
           tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
         />
-        <StatCard label="Daraz Import (net)" value={formatMoney(fin.daraz.net)} tone="brand" />
+        <StatCard label="Daraz (net)" value={formatMoney(fin.daraz.net)} tone="brand" />
+        <StatCard label="Est. Daraz COGS" value={`− ${formatMoney(fin.estimatedDarazCogs)}`} tone="negative" />
         <StatCard
-          label="Combined Net"
-          value={formatMoney(fin.netProfit + fin.daraz.net)}
-          tone={fin.netProfit + fin.daraz.net >= 0 ? 'positive' : 'negative'}
+          label="Real Combined Net"
+          value={formatMoney(fin.combinedNetProfit)}
+          tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
         />
         <StatCard label="Yahya 50%" value={formatMoney(fin.yahyaShare)} />
         <StatCard label="Owner 50%" value={formatMoney(fin.ownerShare)} />
