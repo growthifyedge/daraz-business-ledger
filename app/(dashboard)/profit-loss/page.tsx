@@ -5,12 +5,12 @@ import type { SearchParams } from '@/lib/filters';
 import { prisma } from '@/lib/prisma';
 import { Card, CardBody, CardHeader, PageHeader, StatCard } from '@/components/ui';
 import { FilterBar } from '@/components/FilterBar';
-import { DarazIncomeCard } from '@/components/DarazIncomeCard';
 import { buildBusinessPnl } from '@/lib/daraz/income';
+import { round2 } from '@/lib/daraz/fees';
 import { PnlExport } from './PnlExport';
 import { formatMoney, formatNumber } from '@/lib/utils';
 import { PROFIT_SPLIT } from '@/lib/config';
-import { Info, TrendingUp, Users, Wallet, ChevronDown } from 'lucide-react';
+import { Info, TrendingUp, Users, Wallet } from 'lucide-react';
 
 export const metadata = { title: 'Business Profit & Loss' };
 export const dynamic = 'force-dynamic';
@@ -55,8 +55,33 @@ export default async function ProfitLossPage({
   const hasManual = pnl.hasManualSales;
   const combinedPositive = fin.combinedNetProfit >= 0;
 
+  const d = fin.daraz;
+  // Daraz component lines shown (signed) before Daraz Net. Grouped exactly as
+  // requested; together they sum to d.net. "Other adjustments" (the OTHER fee
+  // category) is included only when non-zero so the visible lines always
+  // reconcile to Daraz Net. Presentation only — figures come straight from the
+  // roll-up, no recalculation.
+  const shippingCharges = round2(d.shippingFee + d.freeShippingMaxFee);
+  const voucherCoinsDiscount = round2(d.voucher + d.coins + d.shippingDiscount);
+  const darazLines: { label: string; amount: number }[] = [
+    { label: 'Gross product revenue', amount: d.productRevenue },
+    { label: 'Buyer shipping credit', amount: d.buyerShippingCredit },
+    { label: 'Commission', amount: d.commission },
+    { label: 'Payment fee', amount: d.paymentFee },
+    { label: 'Handling fee', amount: d.handlingFee },
+    { label: 'Shipping / free-shipping charges', amount: shippingCharges },
+    { label: 'Voucher, coins & shipping discount', amount: voucherCoinsDiscount },
+    { label: 'Income tax & sales tax withheld', amount: d.taxesWithheld },
+    { label: 'Refunds', amount: d.refunds },
+    { label: 'Reversal credits', amount: d.reversals },
+    ...(Math.round(d.otherFees * 100) !== 0
+      ? [{ label: 'Other adjustments', amount: d.otherFees }]
+      : []),
+  ];
+
   // Flattened rows for CSV / PDF export — mirrors the unified statement.
   const exportRows = [
+    ...darazLines.map((l) => ({ item: l.label, amount: l.amount })),
     { item: 'Daraz Net income', amount: fin.daraz.net },
     { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
     ...(hasManual ? [{ item: 'Manual Sales margin (optional)', amount: manualSalesMargin }] : []),
@@ -65,12 +90,6 @@ export default async function ProfitLossPage({
     { item: 'ESTIMATED BUSINESS NET PROFIT', amount: fin.combinedNetProfit },
     { item: `Estimated Yahya Share (${yahyaPct}%)`, amount: fin.yahyaShare },
     { item: `Estimated Owner Share (${ownerPct}%)`, amount: fin.ownerShare },
-    { item: '— Daraz breakdown —', amount: 0 },
-    { item: 'Daraz gross revenue', amount: fin.daraz.grossRevenue },
-    { item: 'Daraz fees', amount: fin.daraz.darazFees },
-    { item: 'Daraz taxes withheld', amount: fin.daraz.taxesWithheld },
-    { item: 'Daraz refunds', amount: fin.daraz.refunds },
-    { item: 'Daraz reversals', amount: fin.daraz.reversals },
   ];
 
   return (
@@ -95,10 +114,14 @@ export default async function ProfitLossPage({
           />
           <CardBody className="p-0">
             <dl className="divide-y divide-slate-100">
-              <PnlLine label="Daraz Net income" amount={fin.daraz.net} bold />
+              {/* Daraz income components (signed) — sum to Daraz Net */}
+              {darazLines.map((l) => (
+                <PnlLine key={l.label} label={l.label} amount={l.amount} signed />
+              ))}
+              <PnlLine label="Daraz Net income" amount={fin.daraz.net} subtotal />
               <PnlLine label="Estimated Daraz COGS (Delivered)" amount={fin.estimatedDarazCogs} deduction />
               {hasManual && (
-                <PnlLine label="Manual Sales margin (optional, separate channel)" amount={manualSalesMargin} />
+                <PnlLine label="Manual Sales margin (optional, separate channel)" amount={manualSalesMargin} signed />
               )}
               <PnlLine label="Operating Expenses" amount={fin.operatingExpenses} deduction />
               <PnlLine label="Accessories Consumed" amount={fin.accessoriesConsumed} deduction />
@@ -109,17 +132,6 @@ export default async function ProfitLossPage({
                 positive={combinedPositive}
               />
             </dl>
-
-            {/* Expandable Daraz breakdown — gross revenue, fees, taxes, refunds, reversals */}
-            <details className="group border-t border-slate-100">
-              <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5">
-                <span>Daraz breakdown (gross revenue, fees, taxes, refunds, reversals)</span>
-                <ChevronDown className="h-4 w-4 shrink-0 transition group-open:rotate-180" />
-              </summary>
-              <div className="p-4 sm:p-5">
-                <DarazIncomeCard rollup={fin.daraz} subtitle={`Imported Daraz income · ${label}`} />
-              </div>
-            </details>
           </CardBody>
         </Card>
 
@@ -207,6 +219,7 @@ function PnlLine({
   amount,
   bold,
   deduction,
+  signed,
   subtotal,
   total,
   positive,
@@ -215,6 +228,7 @@ function PnlLine({
   amount: number;
   bold?: boolean;
   deduction?: boolean;
+  signed?: boolean;
   subtotal?: boolean;
   total?: boolean;
   positive?: boolean;
@@ -228,6 +242,13 @@ function PnlLine({
     labelClass = 'text-sm font-semibold text-slate-800';
     amountClass = 'text-sm font-bold tabular-nums text-slate-900';
     prefix = <span className="mr-1 font-semibold text-emerald-500">+</span>;
+  }
+
+  // Component line carrying its natural sign (credits positive, deductions
+  // negative). Coloured by sign; the amount renders as-is (formatMoney shows
+  // the minus for negatives).
+  if (signed) {
+    amountClass = `text-sm tabular-nums ${amount < 0 ? 'text-rose-600' : 'text-slate-800'}`;
   }
 
   if (deduction) {
