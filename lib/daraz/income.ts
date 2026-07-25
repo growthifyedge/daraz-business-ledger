@@ -71,6 +71,16 @@ export interface DarazIncomeRollup {
   reconciles: boolean; // reconDiff === 0
 }
 
+/**
+ * Whether a Daraz income line's release status means the money was actually
+ * RELEASED (paid out) — used to add Daraz net to Cash Flow only when realised.
+ * "Released" → true; "Ready to Release", "Not Released", "Pending" → false.
+ */
+export function isReleased(status: string | null | undefined): boolean {
+  const x = (status ?? '').toLowerCase();
+  return x.includes('released') && !x.includes('not');
+}
+
 function emptyCat(): Record<FeeCategory, number> {
   const m = {} as Record<FeeCategory, number>;
   for (const c of ALL_FEE_CATEGORIES) m[c] = 0;

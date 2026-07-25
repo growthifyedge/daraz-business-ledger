@@ -40,7 +40,8 @@ export default async function CashFlowReportPage({
 
   const rows = [
     { item: 'Investment in', amount: cf.investment },
-    { item: 'Settlements received', amount: cf.settlementsReceived },
+    { item: 'Settlements received (Manual)', amount: cf.settlementsReceived },
+    { item: 'Daraz released net (Daraz Import)', amount: cf.darazReleasedNet },
     { item: 'Paid to Yahya (transfers + legacy)', amount: -cf.reimbursementsPaid },
     { item: 'Expenses paid', amount: -cf.expensesPaid },
     { item: 'Payouts paid', amount: -cf.payoutsPaid },
@@ -66,7 +67,7 @@ export default async function CashFlowReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Money In" value={formatMoney(cf.investment + cf.settlementsReceived)} tone="positive" />
+        <StatCard label="Money In" value={formatMoney(cf.investment + cf.settlementsReceived + cf.darazReleasedNet)} tone="positive" />
         <StatCard
           label="Money Out"
           value={formatMoney(cf.reimbursementsPaid + cf.expensesPaid + cf.payoutsPaid)}

@@ -39,15 +39,21 @@ export default async function ProfitReportPage({
   ]);
 
   const rows = [
-    { item: 'Gross Sales', amount: fin.grossSales },
+    { item: 'Gross Sales (Manual)', amount: fin.grossSales },
     { item: 'Product Cost (COGS)', amount: -fin.productCost },
-    { item: 'Daraz Commission', amount: -fin.commission },
-    { item: 'VAT', amount: -fin.vat },
-    { item: 'Other Daraz Charges', amount: -fin.otherDarazCharges },
+    { item: 'Daraz Commission (Manual)', amount: -fin.commission },
+    { item: 'VAT (Manual)', amount: -fin.vat },
+    { item: 'Other Daraz Charges (Manual)', amount: -fin.otherDarazCharges },
     { item: 'Returns & Refunds', amount: -fin.returnsRefunds },
     { item: 'Operating Expenses', amount: -fin.operatingExpenses },
     { item: 'Accessories Consumed', amount: -fin.accessoriesConsumed },
-    { item: 'Net Profit', amount: fin.netProfit },
+    { item: 'Net Profit (Manual channel)', amount: fin.netProfit },
+    { item: 'Daraz Import — gross revenue', amount: fin.daraz.grossRevenue },
+    { item: 'Daraz Import — fees', amount: fin.daraz.darazFees },
+    { item: 'Daraz Import — taxes withheld', amount: fin.daraz.taxesWithheld },
+    { item: 'Daraz Import — refunds', amount: fin.daraz.refunds },
+    { item: 'Daraz Import — net', amount: fin.daraz.net },
+    { item: 'Combined Net (Manual + Daraz)', amount: fin.netProfit + fin.daraz.net },
     { item: 'Yahya Share (50%)', amount: fin.yahyaShare },
     { item: 'Owner Share (50%)', amount: fin.ownerShare },
   ];
@@ -68,12 +74,18 @@ export default async function ProfitReportPage({
 
       <FilterBar stores={stores} />
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Gross Sales" value={formatMoney(fin.grossSales)} tone="brand" />
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
+        <StatCard label="Gross Sales (Manual)" value={formatMoney(fin.grossSales)} tone="brand" />
         <StatCard
-          label="Net Profit"
+          label="Net Profit (Manual)"
           value={formatMoney(fin.netProfit)}
           tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
+        />
+        <StatCard label="Daraz Import (net)" value={formatMoney(fin.daraz.net)} tone="brand" />
+        <StatCard
+          label="Combined Net"
+          value={formatMoney(fin.netProfit + fin.daraz.net)}
+          tone={fin.netProfit + fin.daraz.net >= 0 ? 'positive' : 'negative'}
         />
         <StatCard label="Yahya 50%" value={formatMoney(fin.yahyaShare)} />
         <StatCard label="Owner 50%" value={formatMoney(fin.ownerShare)} />

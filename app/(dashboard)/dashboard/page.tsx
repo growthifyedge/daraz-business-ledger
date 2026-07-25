@@ -93,11 +93,18 @@ export default async function DashboardPage() {
           icon={<Package size={18} />}
         />
         <StatCard
-          label="Total Sales Income"
+          label="Manual Sales Income"
           value={formatMoneyCompact(fin.grossSales)}
-          hint={`${formatNumber(fin.unitsSold)} units sold`}
+          hint={`Source: Manual · ${formatNumber(fin.unitsSold)} units`}
           icon={<TrendingUp size={18} />}
           tone="positive"
+        />
+        <StatCard
+          label="Daraz Import (net)"
+          value={formatMoneyCompact(fin.daraz.net)}
+          hint={`Source: Daraz Import · ${formatNumber(fin.daraz.statements)} statement(s)`}
+          icon={<TrendingUp size={18} />}
+          tone="brand"
         />
         <StatCard
           label="Total Expenses"

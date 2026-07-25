@@ -5,6 +5,7 @@ import type { SearchParams } from '@/lib/filters';
 import { prisma } from '@/lib/prisma';
 import { Card, CardBody, CardHeader, PageHeader, StatCard } from '@/components/ui';
 import { FilterBar } from '@/components/FilterBar';
+import { DarazIncomeCard } from '@/components/DarazIncomeCard';
 import { PnlExport } from './PnlExport';
 import { formatMoney, formatNumber } from '@/lib/utils';
 import { PROFIT_SPLIT } from '@/lib/config';
@@ -76,10 +77,10 @@ export default async function ProfitLossPage({
             title={
               <span className="flex items-center gap-1.5">
                 <TrendingUp className="h-4 w-4 text-brand-500" />
-                Profit &amp; Loss Statement
+                Profit &amp; Loss Statement — Manual channel
               </span>
             }
-            subtitle={`${formatNumber(fin.unitsSold)} units sold · ${label}`}
+            subtitle={`Source: Manual Sales · ${formatNumber(fin.unitsSold)} units sold · ${label}`}
           />
           <CardBody className="p-0">
             <dl className="divide-y divide-slate-100">
@@ -184,6 +185,19 @@ export default async function ProfitLossPage({
         </div>
       </div>
 
+      {/* Daraz Import channel (separate from manual Sales above) */}
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <DarazIncomeCard rollup={fin.daraz} subtitle={`Imported Daraz income · ${label}`} />
+        </div>
+        <StatCard
+          label="Combined net (Manual + Daraz)"
+          value={formatMoney(fin.netProfit + fin.daraz.net)}
+          hint="Manual net profit + Daraz net income"
+          tone="brand"
+        />
+      </div>
+
       {/* Methodology note */}
       <Card className="mt-3 border-slate-200 bg-slate-50/60">
         <CardBody className="flex gap-3">
@@ -200,6 +214,13 @@ export default async function ProfitLossPage({
               Operating expenses exclude those Daraz-side categories (they are
               already captured in Sales), and accessories consumed = quantity
               used × unit cost.
+            </p>
+            <p>
+              <span className="font-semibold text-slate-600">Manual vs Daraz Import.</span>{' '}
+              The statement above is the manual Sales channel. Imported Daraz
+              income is shown separately as its own channel — its commission,
+              fees and refunds are already inside the Daraz net, and a Return
+              linked to imported income never deducts that refund again.
             </p>
           </div>
         </CardBody>

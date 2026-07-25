@@ -76,8 +76,15 @@ export default async function CashFlowPage({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
         <StatCard label="Owner Investment" value={formatMoney(cash.investment)} tone="brand" />
         <StatCard
-          label="Daraz Settlements Received"
+          label="Settlements (Manual)"
           value={formatMoney(cash.settlementsReceived)}
+          hint="Source: Manual settlement entries"
+          tone="positive"
+        />
+        <StatCard
+          label="Daraz Released (net)"
+          value={formatMoney(cash.darazReleasedNet)}
+          hint="Source: Daraz Import · released lines only"
           tone="positive"
         />
         <StatCard
