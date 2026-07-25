@@ -1,7 +1,8 @@
 import { prisma } from './prisma';
 import { PROFIT_SPLIT } from './config';
-import { saleCogs, returnRecoveredCogs } from './returns';
+import { saleCogs, returnRecoveredCogs, sellerLossForPnl } from './returns';
 import { combineYahyaCash, type YahyaCashSummary } from './yahyaPayments';
+import { rollUpDarazIncome, isReleased, type DarazIncomeRollup } from './daraz/income';
 import type { Prisma, ExpenseCategory, PaymentStatus } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -121,7 +122,10 @@ export interface Financials {
   netProfit: number;
   yahyaShare: number;
   ownerShare: number;
-  netReceived: number; // sum of sale.netAmount
+  netReceived: number; // sum of sale.netAmount (MANUAL channel)
+  /** Store+date-scoped roll-up of imported Daraz income (SEPARATE channel).
+   *  Additive to the manual figures above; shown as source "Daraz Import". */
+  daraz: DarazIncomeRollup;
 }
 
 export async function getFinancials(f: Filter = {}): Promise<Financials> {
@@ -173,11 +177,20 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   if (returnRange) returnScope.returnDate = returnRange;
   if (f.storeId) returnScope.storeId = f.storeId;
 
-  const [eligibleAgg, platformAgg, pendingAgg] = await Promise.all([
-    // Only these cost the seller money.
-    prisma.return.aggregate({
+  // Order Line IDs whose refund is ALREADY booked inside imported Daraz income
+  // (a REFUND fee line). A Return linked to one of these must not deduct the
+  // refund from P&L again — the Daraz statement is authoritative. Store-scoped;
+  // linkage is by identity (orderItemId), not date.
+  const importedRefundLinesWhere: Prisma.DarazIncomeLineWhereInput = {
+    fees: { some: { category: 'REFUND' } },
+  };
+  if (f.storeId) importedRefundLinesWhere.storeId = f.storeId;
+
+  const [eligibleReturns, platformAgg, pendingAgg, importedRefundLines] = await Promise.all([
+    // Seller-charged completed returns — eligibility is enforced by the where.
+    prisma.return.findMany({
       where: eligibleReturnWhere(f),
-      _sum: { refundAmount: true },
+      select: { refundAmount: true, orderItemId: true },
     }),
     // Daraz absorbed these — informational only.
     prisma.return.aggregate({
@@ -189,9 +202,26 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
       where: { ...returnScope, refundStatus: 'PENDING' },
       _sum: { refundAmount: true },
     }),
+    prisma.darazIncomeLine.findMany({
+      where: importedRefundLinesWhere,
+      select: { orderItemId: true },
+    }),
   ]);
 
-  const returnModuleRefunds = eligibleAgg._sum.refundAmount ?? 0;
+  const importedRefundSet = new Set(importedRefundLines.map((l) => l.orderItemId));
+  // Guard applied per return via the pure sellerLossForPnl rule.
+  const returnModuleRefunds = eligibleReturns.reduce(
+    (s, r) =>
+      s +
+      sellerLossForPnl({
+        refundStatus: 'COMPLETED',
+        chargedTo: 'SELLER',
+        deletedAt: null,
+        linkedToImportedIncome: r.orderItemId != null && importedRefundSet.has(r.orderItemId),
+        refundAmount: r.refundAmount,
+      }),
+    0
+  );
   const platformCoveredRefunds = platformAgg._sum.refundAmount ?? 0;
   const pendingReturnRefunds = pendingAgg._sum.refundAmount ?? 0;
 
@@ -280,6 +310,25 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     accessoriesConsumed;
   const netProfit = grossSales - totalDeductions;
 
+  // Imported Daraz income — a SEPARATE channel (store+date scoped). Recognised on
+  // accrual (all lines in scope); its Daraz fees + refunds are already inside its
+  // net. Never touches stock/COGS/Purchases/Yahya here.
+  const incomeWhere: Prisma.DarazIncomeLineWhereInput = {};
+  if (f.storeId) incomeWhere.storeId = f.storeId;
+  if (range) incomeWhere.transactionDate = range;
+  const incomeRows = await prisma.darazIncomeLine.findMany({
+    where: incomeWhere,
+    select: {
+      storeId: true,
+      statementNumber: true,
+      orderItemId: true,
+      transactionDate: true,
+      netAmount: true,
+      fees: { select: { category: true, amount: true } },
+    },
+  });
+  const daraz = rollUpDarazIncome(incomeRows);
+
   return {
     grossSales,
     unitsSold,
@@ -303,6 +352,7 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     yahyaShare: netProfit * PROFIT_SPLIT.yahya,
     ownerShare: netProfit * PROFIT_SPLIT.owner,
     netReceived,
+    daraz,
   };
 }
 
@@ -344,7 +394,9 @@ export async function getStockValue(): Promise<StockValue> {
 
 export interface CashFlow {
   investment: number; // money owner put in
-  settlementsReceived: number; // money from Daraz
+  settlementsReceived: number; // money from Daraz — MANUAL Settlement entries
+  /** Daraz Import channel: net of income lines marked Released (cash realised). */
+  darazReleasedNet: number;
   reimbursementsPaid: number; // paid to Yahya for purchases
   stockPurchaseUnpaid: number; // owed to Yahya (unpaid purchases)
   // Purchases paid in reality but amount/date not yet reconciled. Shown for
@@ -435,18 +487,31 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const payoutWhere: Prisma.PayoutWhereInput = { deletedAt: null };
   if (range) payoutWhere.date = range;
 
-  const [inv, settle, exp, payout, yahya] = await Promise.all([
+  // Daraz Import money-in: ONLY income lines whose release status is Released.
+  const incomeWhere: Prisma.DarazIncomeLineWhereInput = {};
+  if (range) incomeWhere.transactionDate = range;
+  if (f.storeId) incomeWhere.storeId = f.storeId;
+
+  const [inv, settle, exp, payout, yahya, incomeRows] = await Promise.all([
     prisma.investment.aggregate({ where: investmentWhere, _sum: { amount: true } }),
     prisma.settlement.aggregate({ where: settlementWhere, _sum: { netAmount: true } }),
     prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
     prisma.payout.aggregate({ where: payoutWhere, _sum: { amount: true } }),
     getYahyaCashSummary(f), // shared source — payments + legacy, payable, pending
+    prisma.darazIncomeLine.findMany({ where: incomeWhere, select: { releaseStatus: true, netAmount: true } }),
   ]);
 
   const investment = inv._sum.amount ?? 0;
   const settlementsReceived = settle._sum.netAmount ?? 0;
   const expensesPaid = exp._sum.amount ?? 0;
   const payoutsPaid = payout._sum.amount ?? 0;
+  // Realised Daraz cash: net of Released income lines only (accrual vs cash).
+  const darazReleasedNet =
+    Math.round(
+      (incomeRows.filter((l) => isReleased(l.releaseStatus)).reduce((s, l) => s + l.netAmount, 0) +
+        Number.EPSILON) *
+        100
+    ) / 100;
   // Actual cash paid to Yahya: each bank transfer counted once + legacy PAID.
   const reimbursementsPaid = yahya.actualPaidToYahya;
   // Yahya Debt = Total Purchased (all statuses, incl. RECONCILIATION_PENDING)
@@ -457,12 +522,13 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   // added into netCashBalance below (that nets only actual cash movements).
   const reconciliationPending = yahya.reconciliationPending;
 
-  // Cash in hand = money in (investment + settlements) − money out
-  // (reimbursements to Yahya + non-purchase expenses + profit payouts).
+  // Cash in hand = money in (investment + manual settlements + released Daraz
+  // net) − money out (reimbursements to Yahya + non-purchase expenses + payouts).
   // reconciliationPending is intentionally NOT part of this.
   const netCashBalance =
     investment +
-    settlementsReceived -
+    settlementsReceived +
+    darazReleasedNet -
     reimbursementsPaid -
     expensesPaid -
     payoutsPaid;
@@ -470,6 +536,7 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   return {
     investment,
     settlementsReceived,
+    darazReleasedNet,
     reimbursementsPaid,
     stockPurchaseUnpaid,
     reconciliationPending,

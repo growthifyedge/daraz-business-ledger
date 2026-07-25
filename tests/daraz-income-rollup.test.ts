@@ -1,8 +1,9 @@
 // Phase 1 tests for the pure Daraz income roll-up. No DB, no wiring.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rollUpDarazIncome, type IncomeLineForRollup } from '../lib/daraz/income';
+import { rollUpDarazIncome, isReleased, type IncomeLineForRollup } from '../lib/daraz/income';
 import type { FeeCategory } from '../lib/daraz/fees';
+import { sellerLossForPnl } from '../lib/returns';
 
 const fee = (category: FeeCategory, amount: number) => ({ category, amount });
 
@@ -113,4 +114,41 @@ test('rollup: empty input reconciles trivially (all zeros)', () => {
   assert.equal(r.net, 0);
   assert.equal(r.categoryNet, 0);
   assert.equal(r.reconciles, true);
+});
+
+// --- no double-count: imported REFUND is inside Daraz net; a linked Return adds 0
+
+test('no double count: an imported REFUND is in the Daraz net and a linked Return does not deduct it again', () => {
+  const rollup = rollUpDarazIncome([
+    { statementNumber: 'ST-1', orderItemId: 'OL-1', netAmount: 697, fees: [fee('PRODUCT_REVENUE', 1000), fee('COMMISSION', -100), fee('REFUND', -203)] },
+  ]);
+  assert.equal(rollup.refunds, -203); // refund already inside the Daraz net
+  assert.equal(rollup.net, 697);
+  assert.equal(rollup.reconciles, true);
+
+  // A Return LINKED to imported income must contribute 0 to P&L (guarded).
+  const linked = sellerLossForPnl({
+    refundStatus: 'COMPLETED', chargedTo: 'SELLER', deletedAt: null,
+    linkedToImportedIncome: true, refundAmount: 203,
+  });
+  assert.equal(linked, 0); // not deducted again → counted exactly once (in Daraz net)
+
+  // An UNLINKED (manual) return is unaffected — still a P&L loss.
+  const manual = sellerLossForPnl({
+    refundStatus: 'COMPLETED', chargedTo: 'SELLER', deletedAt: null,
+    linkedToImportedIncome: false, refundAmount: 203,
+  });
+  assert.equal(manual, 203);
+});
+
+// --- released detection for Cash Flow ---------------------------------------
+
+test('isReleased: only truly Released statuses count for Cash Flow', () => {
+  assert.equal(isReleased('Released'), true);
+  assert.equal(isReleased('RELEASED'), true);
+  assert.equal(isReleased('Ready to Release'), false);
+  assert.equal(isReleased('Not Released'), false);
+  assert.equal(isReleased('Pending'), false);
+  assert.equal(isReleased(null), false);
+  assert.equal(isReleased(''), false);
 });
