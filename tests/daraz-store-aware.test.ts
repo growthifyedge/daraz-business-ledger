@@ -264,6 +264,43 @@ test('returned format: the Daraz Returned header set is now accepted (not missin
   assert.equal(v.missing, undefined);
 });
 
+// The EXACT headers from the live Daraz Returned export (plus return-only PII).
+const LIVE_RETURNED_HEADERS = ['Order ID', 'Order Item ID', 'Seller SKU ID', 'Item Name', 'Order Date', 'Status'];
+
+test('returned format (live headers): exact live Returned header set is accepted and maps correctly', () => {
+  const withPii = [...LIVE_RETURNED_HEADERS, 'Buyer Name', 'Buyer Phone', 'Return Reason', 'Tracking Number'];
+  assert.equal(validateRawOrderHeaders(withPii).ok, true);
+
+  const rows = normaliseRawOrderRows([
+    {
+      'Order ID': 'ORD-77',
+      'Order Item ID': 'OL-77',
+      'Seller SKU ID': 'SKU-Z',
+      'Item Name': 'Gadget',
+      'Order Date': '05 Jul 2026',
+      'Status': 'Returned',
+      'Buyer Name': 'Jane Doe',
+      'Buyer Phone': '03007654321',
+      'Return Reason': 'changed mind',
+      'Tracking Number': 'TRK-XYZ',
+    },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].orderNumber, 'ORD-77'); // Order ID → Order Number
+  assert.equal(rows[0].orderItemId, 'OL-77'); // Order Item ID → Order Line ID
+  assert.equal(rows[0].sellerSku, 'SKU-Z'); // Seller SKU ID → Seller SKU
+  assert.equal(rows[0].productName, 'Gadget'); // Item Name → Product Name
+  assert.equal(rows[0].orderDate, '05 Jul 2026'); // Order Date → Order Date
+  assert.equal(rows[0].status, 'Returned'); // Status → Order Status
+  assert.equal(rows[0].quantity, 1); // derived
+  assert.deepEqual(Object.keys(rows[0]).sort(), PERMITTED_KEYS);
+  // In-memory PII discard preserved — no return-only PII value survives.
+  const serialized = JSON.stringify(rows);
+  for (const secret of ['Jane Doe', '03007654321', 'changed mind', 'TRK-XYZ']) {
+    assert.equal(serialized.includes(secret), false, `discarded "${secret}" must not survive`);
+  }
+});
+
 test('returned format: rows map to the seven permitted fields; PII discarded', () => {
   const rows = normaliseRawOrderRows([
     {

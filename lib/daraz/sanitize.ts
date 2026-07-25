@@ -49,6 +49,8 @@ const HEADER_TO_FIELD: Record<string, OrderField> = {
   'order number': 'orderNumber',
   'order no': 'orderNumber',
   orderno: 'orderNumber',
+  'order id': 'orderNumber', // Daraz Returned export header (distinct from "Order Item ID")
+  orderid: 'orderNumber',
   // Seller SKU
   sellersku: 'sellerSku',
   'seller sku': 'sellerSku',
