@@ -282,20 +282,46 @@ export function ImportManager({
         </CardBody>
       </Card>
 
-      {committed && (
+      {committed === 'already' && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-          {committed === 'already' ? (
-            <span>These exact files were already imported — no duplicates created.</span>
-          ) : (
-            <span>
-              Imported <strong>{formatNumber(committed.orderItems)}</strong> orders,{' '}
-              <strong>{formatNumber(committed.incomeLines)}</strong> statement lines across{' '}
-              <strong>{committed.statementCount}</strong> statements. Net{' '}
-              <strong>{formatMoney(committed.netPayout)}</strong>. No stock/COGS/P&amp;L posted.
-            </span>
-          )}
+          <span>These exact files were already imported for this store — no duplicates created.</span>
         </div>
+      )}
+
+      {committed && committed !== 'already' && (
+        <Card className="mb-4 border-emerald-200">
+          <CardHeader
+            title="Import complete"
+            subtitle={`Store: ${storeName || '—'} · reconciliation ${committed.reconDiff === 0 ? 'balanced' : `off by ${formatMoney(committed.reconDiff)}`}.`}
+          />
+          <CardBody>
+            <div className="mb-3 flex items-center gap-2 text-sm text-emerald-700">
+              <CheckCircle2 className="h-4 w-4" />
+              Imported into <strong>{storeName || 'the selected store'}</strong>. No stock, COGS, P&amp;L,
+              Purchases, Yahya debts or Sales were posted.
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Mini label="Store" value={storeName || '—'} />
+              <Mini label="Statements affected" value={formatNumber(committed.statementCount)} />
+              <Mini label="Order lines new / updated" value={`${formatNumber(committed.orderLinesInserted)} / ${formatNumber(committed.orderLinesUpdated)}`} />
+              <Mini label="Income lines new / updated" value={`${formatNumber(committed.incomeLines)} / ${formatNumber(committed.incomeLinesUpdated)}`} />
+              <Mini
+                label="Reconciliation"
+                value={committed.reconDiff === 0 ? 'Balanced ✓' : formatMoney(committed.reconDiff)}
+                tone={committed.reconDiff === 0 ? 'ok' : 'neg'}
+              />
+            </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Net imported: <strong>{formatMoney(committed.netPayout)}</strong>. View per-store
+              detail on the{' '}
+              <Link href="/statements" className="text-brand-600 hover:text-brand-700">
+                Statements
+              </Link>{' '}
+              page.
+            </p>
+          </CardBody>
+        </Card>
       )}
 
       {r && (

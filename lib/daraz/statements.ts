@@ -13,6 +13,8 @@ export interface StatementLineInput {
   statementPeriod?: string | null;
   releaseStatus?: string | null;
   transactionDate?: Date | string | null;
+  /** Store label this line belongs to (display only; never affects amounts). */
+  storeName?: string | null;
   orderItemId: string;
   productPriceRevenue: number;
   buyerShippingCredit: number;
@@ -27,6 +29,9 @@ export interface StatementSummary {
   statementPeriod: string;
   releaseStatus: string;
   transactionDate: string | null;
+  /** Assigned store — a single name, '' if unattributed, or 'Multiple' if a
+   *  statement number spans stores (not expected; surfaced rather than hidden). */
+  storeName: string;
   orderItemCount: number; // distinct order items in this statement
   lineCount: number; // statement-specific income lines
   productRevenue: number;
@@ -63,6 +68,7 @@ export function summariseStatements(lines: StatementLineInput[]): StatementSumma
       period: string;
       release: string;
       date: string | null;
+      stores: Set<string>;
       orderIds: Set<string>;
       lineCount: number;
       productRevenue: number;
@@ -81,6 +87,7 @@ export function summariseStatements(lines: StatementLineInput[]): StatementSumma
         period: l.statementPeriod ?? '',
         release: l.releaseStatus ?? '',
         date: normDate(l.transactionDate),
+        stores: new Set(),
         orderIds: new Set(),
         lineCount: 0,
         productRevenue: 0,
@@ -92,6 +99,7 @@ export function summariseStatements(lines: StatementLineInput[]): StatementSumma
       };
       groups.set(l.statementNumber, g);
     }
+    if (l.storeName) g.stores.add(l.storeName);
     g.orderIds.add(l.orderItemId);
     g.lineCount += 1;
     g.productRevenue = round2(g.productRevenue + l.productPriceRevenue);
@@ -108,6 +116,7 @@ export function summariseStatements(lines: StatementLineInput[]): StatementSumma
       statementPeriod: g.period,
       releaseStatus: g.release,
       transactionDate: g.date,
+      storeName: g.stores.size === 1 ? [...g.stores][0] : g.stores.size === 0 ? '' : 'Multiple',
       orderItemCount: g.orderIds.size,
       lineCount: g.lineCount,
       productRevenue: g.cat.PRODUCT_REVENUE,
