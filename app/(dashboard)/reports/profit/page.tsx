@@ -54,9 +54,9 @@ export default async function ProfitReportPage({
     { item: 'Daraz Import — refunds', amount: fin.daraz.refunds },
     { item: 'Daraz Import — net', amount: fin.daraz.net },
     { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
-    { item: 'Real Combined Net (Manual + Daraz − est. COGS)', amount: fin.combinedNetProfit },
-    { item: 'Yahya Share (50%)', amount: fin.yahyaShare },
-    { item: 'Owner Share (50%)', amount: fin.ownerShare },
+    { item: 'Estimated Business Net Profit', amount: fin.combinedNetProfit },
+    { item: 'Estimated Yahya Share (50%)', amount: fin.yahyaShare },
+    { item: 'Estimated Owner Share (50%)', amount: fin.ownerShare },
   ];
 
   return (
@@ -69,28 +69,23 @@ export default async function ProfitReportPage({
       </Link>
 
       <PageHeader
-        title="Profit & Loss"
+        title="Estimated Business Profit & Loss"
         description={rangeLabel(filter)}
       />
 
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-        <StatCard label="Gross Sales (Manual)" value={formatMoney(fin.grossSales)} tone="brand" />
-        <StatCard
-          label="Net Profit (Manual)"
-          value={formatMoney(fin.netProfit)}
-          tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
-        />
         <StatCard label="Daraz (net)" value={formatMoney(fin.daraz.net)} tone="brand" />
         <StatCard label="Est. Daraz COGS" value={`− ${formatMoney(fin.estimatedDarazCogs)}`} tone="negative" />
         <StatCard
-          label="Real Combined Net"
+          label="Est. Business Net Profit"
           value={formatMoney(fin.combinedNetProfit)}
           tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
         />
-        <StatCard label="Yahya 50%" value={formatMoney(fin.yahyaShare)} />
-        <StatCard label="Owner 50%" value={formatMoney(fin.ownerShare)} />
+        <StatCard label="Est. Yahya 50%" value={formatMoney(fin.yahyaShare)} />
+        <StatCard label="Est. Owner 50%" value={formatMoney(fin.ownerShare)} />
+        <StatCard label="Manual Sales (gross)" value={formatMoney(fin.grossSales)} hint="Separate channel" />
       </div>
 
       <Card>

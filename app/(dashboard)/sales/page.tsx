@@ -4,7 +4,7 @@ import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
 import { SalesManager } from './SalesManager';
 
-export const metadata = { title: 'Sales Income' };
+export const metadata = { title: 'Manual Sales' };
 export const dynamic = 'force-dynamic';
 
 export default async function SalesPage({

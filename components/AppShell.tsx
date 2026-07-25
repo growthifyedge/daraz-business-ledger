@@ -34,7 +34,7 @@ const NAV = [
   { href: '/stores', label: 'Stores', icon: Store },
   { href: '/products', label: 'Products & Inventory', icon: Package },
   { href: '/purchases', label: 'Purchases', icon: ShoppingCart },
-  { href: '/sales', label: 'Sales Income', icon: TrendingUp },
+  { href: '/sales', label: 'Manual Sales', icon: TrendingUp },
   { href: '/returns', label: 'Returns & Refunds', icon: Undo2 },
   { href: '/expenses', label: 'Expenses', icon: Receipt },
   { href: '/accessories', label: 'Accessories', icon: Boxes },
