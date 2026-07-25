@@ -187,3 +187,121 @@ export function rollUpDarazIncome(
     reconciles: round2(categoryNet - net) === 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Estimated Daraz COGS (calculation-time only)
+//
+// For EXACTLY Delivered Daraz order lines, resolve (storeId, sellerSku) through
+// the saved SKU mapping and cost each unit at that product's current
+// purchaseCost. This is an ESTIMATE — historic purchase lots are incomplete, so
+// date-aware FIFO cannot cost every unit; a flat purchaseCost gives full
+// coverage. Pure: no Prisma, no stock/product/purchase writes, no mutation of
+// its inputs.
+// ---------------------------------------------------------------------------
+
+/** Only lines whose status is EXACTLY "delivered" are costed. Excludes
+ *  shipping, shipped, returned, cancelled, and "Buyer Delivery Failed". */
+export function isDeliveredExact(status: string | null | undefined): boolean {
+  return (status ?? '').trim().toLowerCase() === 'delivered';
+}
+
+export interface DeliveredOrderLine {
+  storeId?: string | null;
+  sellerSku?: string | null;
+  status?: string | null;
+  /** Order date (createTime) — used for date scoping. */
+  orderDate?: Date | string | null;
+  quantity: number;
+}
+
+export interface SkuMappingRow {
+  storeId?: string | null;
+  sellerSku: string;
+  productId: string;
+}
+
+export interface ProductCostRow {
+  id: string;
+  purchaseCost: number;
+}
+
+export interface DarazCogsEstimate {
+  deliveredUnits: number; // Σ qty of exactly-Delivered lines in scope
+  mappedUnits: number; // delivered units whose (store, sku) resolves to a product
+  unmappedUnits: number; // delivered units with no SKU mapping
+  costedUnits: number; // mapped units whose product has purchaseCost > 0
+  missingCostUnits: number; // mapped units whose product cost is 0/absent
+  estimatedCogs: number; // Σ costed units × purchaseCost
+  coveragePct: number; // costedUnits / deliveredUnits (0 when none)
+  /** SKUs that could not be mapped (for the coverage warning). */
+  unmappedSkus: string[];
+}
+
+const mapKey = (storeId: string | null | undefined, sellerSku: string | null | undefined) =>
+  `${storeId ?? ''}||${(sellerSku ?? '').trim()}`;
+
+function orderInScope(l: DeliveredOrderLine, f: IncomeRollupFilter): boolean {
+  if (f.storeId && (l.storeId ?? null) !== f.storeId) return false;
+  if (f.from || f.to) {
+    const t = ts(l.orderDate);
+    if (t == null) return false;
+    if (f.from && t < f.from.getTime()) return false;
+    if (f.to && t > f.to.getTime()) return false;
+  }
+  return true;
+}
+
+/**
+ * Estimate Daraz COGS for exactly-Delivered lines, store/date scoped. Resolves
+ * each line's product via the saved (storeId, sellerSku) mapping and costs it at
+ * the product's purchaseCost. Reports coverage so the UI can label it estimated.
+ * Pure — never writes or mutates its inputs.
+ */
+export function estimateDarazCogs(
+  lines: DeliveredOrderLine[],
+  mappings: SkuMappingRow[],
+  products: ProductCostRow[],
+  filter: IncomeRollupFilter = {}
+): DarazCogsEstimate {
+  const skuToProduct = new Map(mappings.map((m) => [mapKey(m.storeId, m.sellerSku), m.productId]));
+  const costById = new Map(products.map((p) => [p.id, p.purchaseCost]));
+
+  let deliveredUnits = 0;
+  let mappedUnits = 0;
+  let costedUnits = 0;
+  let missingCostUnits = 0;
+  let estimatedCogs = 0;
+  const unmappedSkus = new Set<string>();
+
+  for (const l of lines) {
+    if (!isDeliveredExact(l.status)) continue; // Delivered-only
+    if (!orderInScope(l, filter)) continue;
+    const qty = Number.isInteger(l.quantity) && l.quantity > 0 ? l.quantity : 1;
+    deliveredUnits += qty;
+
+    const productId = skuToProduct.get(mapKey(l.storeId, l.sellerSku));
+    if (!productId) {
+      unmappedSkus.add((l.sellerSku ?? '').trim());
+      continue; // unmapped
+    }
+    mappedUnits += qty;
+    const cost = costById.get(productId) ?? 0;
+    if (cost > 0) {
+      costedUnits += qty;
+      estimatedCogs = round2(estimatedCogs + qty * cost);
+    } else {
+      missingCostUnits += qty;
+    }
+  }
+
+  return {
+    deliveredUnits,
+    mappedUnits,
+    unmappedUnits: deliveredUnits - mappedUnits,
+    costedUnits,
+    missingCostUnits,
+    estimatedCogs,
+    coveragePct: deliveredUnits > 0 ? round2((costedUnits / deliveredUnits) * 100) : 0,
+    unmappedSkus: [...unmappedSkus].filter(Boolean).sort(),
+  };
+}

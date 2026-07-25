@@ -2,7 +2,13 @@ import { prisma } from './prisma';
 import { PROFIT_SPLIT } from './config';
 import { saleCogs, returnRecoveredCogs, sellerLossForPnl } from './returns';
 import { combineYahyaCash, type YahyaCashSummary } from './yahyaPayments';
-import { rollUpDarazIncome, isReleased, type DarazIncomeRollup } from './daraz/income';
+import {
+  rollUpDarazIncome,
+  isReleased,
+  estimateDarazCogs,
+  type DarazIncomeRollup,
+  type DarazCogsEstimate,
+} from './daraz/income';
 import type { Prisma, ExpenseCategory, PaymentStatus } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -126,6 +132,15 @@ export interface Financials {
   /** Store+date-scoped roll-up of imported Daraz income (SEPARATE channel).
    *  Additive to the manual figures above; shown as source "Daraz Import". */
   daraz: DarazIncomeRollup;
+  /** Estimated COGS for exactly-Delivered Daraz lines (flat purchaseCost; est.
+   *  because historic purchase lots are incomplete). Calculation-time only. */
+  darazCogs: DarazCogsEstimate;
+  /** Convenience: darazCogs.estimatedCogs. */
+  estimatedDarazCogs: number;
+  /** Real combined profit = manual netProfit + Daraz net − Estimated Daraz COGS.
+   *  (Shared operating expenses + accessories are already inside manual netProfit,
+   *  so they are counted once.) The Yahya/Owner split uses THIS figure. */
+  combinedNetProfit: number;
 }
 
 export async function getFinancials(f: Filter = {}): Promise<Financials> {
@@ -329,6 +344,37 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   });
   const daraz = rollUpDarazIncome(incomeRows);
 
+  // Estimated Daraz COGS — exactly-Delivered order lines only, store+date scoped
+  // by order date. Resolves (storeId, sellerSku) via the saved mapping and costs
+  // at Product.purchaseCost. READ-ONLY: never writes stock/products/purchases.
+  const deliveredWhere: Prisma.DarazOrderItemWhereInput = {
+    status: { equals: 'delivered', mode: 'insensitive' },
+  };
+  if (f.storeId) deliveredWhere.storeId = f.storeId;
+  if (range) deliveredWhere.createTime = range;
+  const [deliveredLines, skuMappings, productCosts] = await Promise.all([
+    prisma.darazOrderItem.findMany({
+      where: deliveredWhere,
+      select: { storeId: true, sellerSku: true, status: true, createTime: true, quantity: true },
+    }),
+    prisma.darazSkuMapping.findMany({ select: { storeId: true, sellerSku: true, productId: true } }),
+    prisma.product.findMany({ where: { deletedAt: null }, select: { id: true, purchaseCost: true } }),
+  ]);
+  const darazCogs = estimateDarazCogs(
+    deliveredLines.map((l) => ({
+      storeId: l.storeId,
+      sellerSku: l.sellerSku,
+      status: l.status,
+      orderDate: l.createTime,
+      quantity: l.quantity,
+    })),
+    skuMappings.map((m) => ({ storeId: m.storeId, sellerSku: m.sellerSku, productId: m.productId })),
+    productCosts
+  );
+  const estimatedDarazCogs = darazCogs.estimatedCogs;
+  const combinedNetProfit =
+    Math.round((netProfit + daraz.net - estimatedDarazCogs + Number.EPSILON) * 100) / 100;
+
   return {
     grossSales,
     unitsSold,
@@ -349,10 +395,14 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     grossProfit,
     totalDeductions,
     netProfit,
-    yahyaShare: netProfit * PROFIT_SPLIT.yahya,
-    ownerShare: netProfit * PROFIT_SPLIT.owner,
+    // Yahya/Owner 50–50 now split the REAL combined profit (manual + Daraz − est. COGS).
+    yahyaShare: combinedNetProfit * PROFIT_SPLIT.yahya,
+    ownerShare: combinedNetProfit * PROFIT_SPLIT.owner,
     netReceived,
     daraz,
+    darazCogs,
+    estimatedDarazCogs,
+    combinedNetProfit,
   };
 }
 
