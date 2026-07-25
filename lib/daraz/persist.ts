@@ -19,7 +19,7 @@ import {
 } from './sanitize';
 import { computeDryRun, dupKey, planIncomeLineWrites, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
-import { readOrdersWorkbook } from './xlsx';
+import { readOrdersWorkbook, UploadError } from './xlsx';
 
 export interface OrdersFile {
   buf: Buffer;
@@ -59,7 +59,13 @@ export async function parseUpload(
   const rawRecords: RawOrderRecord[] = [];
   const orderHashes: string[] = [];
   for (const f of orderFiles) {
-    rawRecords.push(...normaliseRawOrderRows(await readOrdersWorkbook(f.buf)));
+    try {
+      rawRecords.push(...normaliseRawOrderRows(await readOrdersWorkbook(f.buf)));
+    } catch (e) {
+      // Prefix the header-only diagnostic with the offending file name.
+      if (e instanceof UploadError) throw new UploadError(`"${f.name}" — ${e.message}`);
+      throw e;
+    }
     orderHashes.push(sha256Hex(f.buf));
   }
   const combined = combineOrderRecords(rawRecords);

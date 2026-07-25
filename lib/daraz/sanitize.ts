@@ -80,7 +80,56 @@ const HEADER_TO_FIELD: Record<string, OrderField> = {
   'last update': 'updateTime',
   lastupdated: 'updateTime',
   'status update time': 'updateTime',
+
+  // --- Daraz "Returned" export: same fields under different header names ---
+  // Order Number
+  'sale order number': 'orderNumber',
+  saleordernumber: 'orderNumber',
+  'sale order id': 'orderNumber',
+  saleorderid: 'orderNumber',
+  // Order Line ID
+  'return order item id': 'orderItemId',
+  returnorderitemid: 'orderItemId',
+  'return item id': 'orderItemId',
+  // Seller SKU
+  'shop sku': 'sellerSku',
+  shopsku: 'sellerSku',
+  'seller sku id': 'sellerSku',
+  sellerskuid: 'sellerSku',
+  'sku id': 'sellerSku',
+  skuid: 'sellerSku',
+  'seller sku code': 'sellerSku',
+  // Product Name
+  'return product name': 'productName',
+  // Order Date (return request/created date)
+  'requested date': 'orderDate',
+  'return date': 'orderDate',
+  'return requested date': 'orderDate',
+  'return created time': 'orderDate',
+  'return request date': 'orderDate',
+  // Order/Return Status
+  'return status': 'status',
+  returnstatus: 'status',
+  'refund status': 'status',
+  'return order status': 'status',
+  'rma status': 'status',
 };
+
+const FIELD_LABEL: Record<OrderField, string> = {
+  orderItemId: 'Order Line ID',
+  orderNumber: 'Order Number',
+  sellerSku: 'Seller SKU',
+  productName: 'Product Name',
+  orderDate: 'Order Date',
+  status: 'Order Status',
+  quantity: 'Quantity',
+  updateTime: 'Update Time',
+};
+
+/** Human label for a permitted order field (for diagnostics). */
+export function orderFieldLabel(field: OrderField): string {
+  return FIELD_LABEL[field];
+}
 
 /** Map a raw header to a permitted field, or null if it must be discarded. */
 export function permittedOrderField(header: string): OrderField | null {

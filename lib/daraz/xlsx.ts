@@ -5,7 +5,7 @@
 // uploads before any parsing work is done.
 
 import ExcelJS from 'exceljs';
-import { validateRawOrderHeaders, permittedOrderField, type OrderField } from './sanitize';
+import { validateRawOrderHeaders, permittedOrderField, orderFieldLabel, type OrderField } from './sanitize';
 
 // --- upload limits -----------------------------------------------------------
 // Sized for the real exports (Orders ~320 KB, Income ~810 KB, combined ~1.13 MB)
@@ -107,11 +107,19 @@ export async function readOrdersWorkbook(buf: Buffer): Promise<Record<string, un
     throw new UploadError('The Orders workbook has an unexpected number of columns.');
   }
 
-  // Accept any real Daraz Orders export; only require the permitted identifier
-  // columns to be present. Extra/PII columns are allowed and discarded.
+  // Accept any real Daraz Orders export (Shipping / Delivered / Returned); only
+  // require the permitted identifier columns to be present. Extra/PII columns are
+  // allowed and discarded. If a column is missing, emit a HEADER-ONLY diagnostic
+  // — the detected column NAMES only, never any row value — so aliases can be
+  // added for the format. (This runs before any data row is read.)
   const headerCheck = validateRawOrderHeaders(allHeaderNames);
   if (!headerCheck.ok) {
-    throw new UploadError(headerCheck.error ?? 'The Orders file is not a recognised Daraz export.');
+    const missingLabels = (headerCheck.missing ?? []).map(orderFieldLabel).join(', ');
+    throw new UploadError(
+      `Unrecognised Orders export — no column maps to: ${missingLabels}. ` +
+        `Detected column names (names only, no data): ${allHeaderNames.join(' | ')}. ` +
+        `Share these column names to add support for this export format.`
+    );
   }
 
   const rows: Record<string, unknown>[] = [];
