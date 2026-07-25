@@ -505,4 +505,28 @@ test('statements: summariseStatements rolls up every fee category per statement'
   assert.equal(s[0].commission, -30);
   assert.equal(s[0].refunds, -300);
   assert.equal(s[0].reversals, 5);
+  assert.equal(s[0].storeName, ''); // no store supplied here
+});
+
+test('statements: each summary carries its assigned store; unattributed → "", mixed → "Multiple"', () => {
+  const base = {
+    statementPeriod: 'p', releaseStatus: 'r', transactionDate: null,
+    productPriceRevenue: 0, buyerShippingCredit: 0, totalCredits: 100,
+    totalDeductions: 0, netAmount: 100, fees: [],
+  };
+  const s = summariseStatements([
+    { ...base, statementNumber: 'ST-A', orderItemId: 'OI-1', storeName: 'Ashu Traderz' },
+    { ...base, statementNumber: 'ST-A', orderItemId: 'OI-2', storeName: 'Ashu Traderz' },
+    { ...base, statementNumber: 'ST-B', orderItemId: 'OI-3', storeName: 'GrowthifyEdge' },
+    { ...base, statementNumber: 'ST-C', orderItemId: 'OI-4' }, // no store → ''
+    { ...base, statementNumber: 'ST-D', orderItemId: 'OI-5', storeName: 'Ashu Traderz' },
+    { ...base, statementNumber: 'ST-D', orderItemId: 'OI-6', storeName: 'GrowthifyEdge' }, // mixed
+  ]);
+  const by = Object.fromEntries(s.map((x) => [x.statementNumber, x.storeName]));
+  assert.equal(by['ST-A'], 'Ashu Traderz');
+  assert.equal(by['ST-B'], 'GrowthifyEdge');
+  assert.equal(by['ST-C'], '');
+  assert.equal(by['ST-D'], 'Multiple');
+  // Store attribution never changes amounts.
+  assert.equal(s.find((x) => x.statementNumber === 'ST-A')!.netPayout, 200);
 });

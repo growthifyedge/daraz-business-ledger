@@ -2,22 +2,40 @@ import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { summariseStatements } from '@/lib/daraz/statements';
-import { formatMoney, formatNumber } from '@/lib/utils';
+import { formatMoney, formatNumber, cn } from '@/lib/utils';
 import { Card, CardBody, CardHeader, Table, THead, TH, TD, TRow, EmptyState } from '@/components/ui';
 import { FileText } from 'lucide-react';
 
 export const metadata = { title: 'Daraz Statements' };
 export const dynamic = 'force-dynamic';
 
-export default async function StatementsPage() {
+export default async function StatementsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ store?: string }>;
+}) {
   await requireUser(); // OWNER or ADMIN only
 
-  const lines = await prisma.darazIncomeLine.findMany({
+  const sp = await searchParams;
+  const requestedStore = typeof sp.store === 'string' ? sp.store : '';
+
+  const stores = await prisma.store.findMany({
+    where: { deletedAt: null },
+    orderBy: { name: 'asc' },
+    select: { id: true, name: true },
+  });
+  // Ignore an unknown store id — falls back to All stores.
+  const activeStore = stores.find((s) => s.id === requestedStore) ?? null;
+
+  const rows = await prisma.darazIncomeLine.findMany({
+    where: activeStore ? { storeId: activeStore.id } : {},
     select: {
       statementNumber: true,
       statementPeriod: true,
       releaseStatus: true,
       transactionDate: true,
+      storeId: true,
+      store: { select: { name: true } },
       orderItemId: true,
       productPriceRevenue: true,
       buyerShippingCredit: true,
@@ -28,7 +46,7 @@ export default async function StatementsPage() {
     },
   });
 
-  const statements = summariseStatements(lines);
+  const statements = summariseStatements(rows.map((l) => ({ ...l, storeName: l.store?.name ?? null })));
   const grand = statements.reduce(
     (a, s) => ({
       lines: a.lines + s.lineCount,
@@ -40,26 +58,51 @@ export default async function StatementsPage() {
     { lines: 0, orders: 0, credits: 0, deductions: 0, net: 0 }
   );
 
+  const chip = (active: boolean) =>
+    cn(
+      'rounded-full border px-3 py-1 text-xs font-medium transition',
+      active
+        ? 'border-brand-500 bg-brand-50 text-brand-700'
+        : 'border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700'
+    );
+
   return (
     <>
-      <div className="mb-5">
+      <div className="mb-4">
         <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Daraz Statements</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Weekly settlement statements imported from Daraz Income. Every fee category is preserved.
-          No customer, shipping, billing or tracking data is stored or shown.
+          Weekly settlement statements imported from Daraz Income, per store. Every fee category is
+          preserved. No customer, shipping, billing or tracking data is stored or shown.
         </p>
+      </div>
+
+      {/* Store filter — All stores / each store. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Store</span>
+        <Link href="/statements" className={chip(!activeStore)}>
+          All stores
+        </Link>
+        {stores.map((s) => (
+          <Link key={s.id} href={`/statements?store=${encodeURIComponent(s.id)}`} className={chip(activeStore?.id === s.id)}>
+            {s.name}
+          </Link>
+        ))}
       </div>
 
       {statements.length === 0 ? (
         <EmptyState
           icon={<FileText className="h-10 w-10" />}
-          title="No statements imported yet"
-          message="Import Daraz Orders + Income from the Daraz Import page to populate statements."
+          title={activeStore ? `No statements for ${activeStore.name}` : 'No statements imported yet'}
+          message={
+            activeStore
+              ? 'Try a different store, or import Daraz Orders + Income for this store from the Daraz Import page.'
+              : 'Import Daraz Orders + Income from the Daraz Import page to populate statements.'
+          }
         />
       ) : (
         <Card>
           <CardHeader
-            title={`${statements.length} statement(s)`}
+            title={`${statements.length} statement(s)${activeStore ? ` · ${activeStore.name}` : ''}`}
             subtitle={`${formatNumber(grand.orders)} order items · ${formatNumber(grand.lines)} statement lines · net ${formatMoney(grand.net)}`}
           />
           <CardBody className="p-0">
@@ -68,6 +111,7 @@ export default async function StatementsPage() {
                 <THead>
                   <TRow>
                     <TH>Statement</TH>
+                    <TH>Store</TH>
                     <TH>Period</TH>
                     <TH>Release</TH>
                     <TH align="right">Items</TH>
@@ -97,6 +141,7 @@ export default async function StatementsPage() {
                           {s.statementNumber}
                         </Link>
                       </TD>
+                      <TD className="whitespace-nowrap text-xs text-slate-600">{s.storeName || '—'}</TD>
                       <TD className="whitespace-nowrap text-xs text-slate-500">{s.statementPeriod || '—'}</TD>
                       <TD className="text-xs">{s.releaseStatus || '—'}</TD>
                       <TD align="right">{s.orderItemCount}</TD>
@@ -121,7 +166,7 @@ export default async function StatementsPage() {
                 </tbody>
                 <tfoot>
                   <TRow className="border-t-2 border-slate-200 font-semibold">
-                    <TD colSpan={3}>All statements</TD>
+                    <TD colSpan={4}>{activeStore ? activeStore.name : 'All statements'}</TD>
                     <TD align="right">{formatNumber(grand.orders)}</TD>
                     <TD colSpan={2} />
                     <TD align="right">{formatMoney(grand.credits)}</TD>
