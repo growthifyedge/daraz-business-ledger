@@ -6,6 +6,7 @@ import {
   isReleased,
   estimateDarazCogs,
   isDeliveredExact,
+  buildBusinessPnl,
   type IncomeLineForRollup,
   type DeliveredOrderLine,
   type SkuMappingRow,
@@ -263,4 +264,39 @@ test('cogs: profit reconciliation — combined = manual net + Daraz net − est.
   assert.equal(rollup.net, 697);
   assert.equal(cogs.estimatedCogs, 100);
   assert.equal(combined, 1097); // 500 + 697 − 100
+});
+
+// --- unified Business P&L statement (UI reconciliation) ----------------------
+
+test('business P&L: no manual sales — statement lines reconcile to combined net', () => {
+  // Manual Sales = 0; combinedNetProfit = daraz net − est.COGS − opex − accessories.
+  const combined = 13168.94; // 75218.94 − 60550 − 1000 − 500
+  const p = buildBusinessPnl({
+    darazNet: 75218.94, estimatedDarazCogs: 60550,
+    grossSales: 0, productCost: 0, commission: 0, vat: 0, otherDarazCharges: 0, returnsRefunds: 0,
+    operatingExpenses: 1000, accessoriesConsumed: 500,
+    combinedNetProfit: combined,
+  });
+  assert.equal(p.manualSalesMargin, 0);
+  assert.equal(p.hasManualSales, false);
+  assert.equal(p.businessNetProfit, combined);
+  assert.equal(p.reconstructed, combined); // Daraz net − COGS − opex − accessories
+  assert.equal(p.reconciles, true);
+});
+
+test('business P&L: with manual sales — margin line keeps the statement reconciling', () => {
+  // Manual: gross 2000, cost 800, commission 100, vat 50 → margin 1050.
+  // manualNetProfit = 1050 − opex(1000) − acc(500) = −450.
+  // combinedNetProfit = manualNetProfit + darazNet − estCogs = −450 + 5000 − 3000 = 1550.
+  const p = buildBusinessPnl({
+    darazNet: 5000, estimatedDarazCogs: 3000,
+    grossSales: 2000, productCost: 800, commission: 100, vat: 50, otherDarazCharges: 0, returnsRefunds: 0,
+    operatingExpenses: 1000, accessoriesConsumed: 500,
+    combinedNetProfit: 1550,
+  });
+  assert.equal(p.manualSalesMargin, 1050);
+  assert.equal(p.hasManualSales, true);
+  assert.equal(p.reconstructed, 1550); // 5000 − 3000 + 1050 − 1000 − 500
+  assert.equal(p.reconciles, true);
+  assert.equal(p.businessNetProfit, 1550);
 });

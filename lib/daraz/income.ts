@@ -305,3 +305,64 @@ export function estimateDarazCogs(
     unmappedSkus: [...unmappedSkus].filter(Boolean).sort(),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Unified "Estimated Business P&L" statement lines (presentation math only).
+//
+// Turns the shared Financials figures into the single statement the P&L screen
+// renders. Pure — it derives the manual sales-only margin and reconstructs the
+// business net, then asserts it equals the authoritative combinedNetProfit. No
+// calculation logic changes: combinedNetProfit is passed in and is the total.
+// ---------------------------------------------------------------------------
+
+export interface BusinessPnlInput {
+  darazNet: number;
+  estimatedDarazCogs: number;
+  /** Manual channel components (already computed by getFinancials). */
+  grossSales: number;
+  productCost: number;
+  commission: number;
+  vat: number;
+  otherDarazCharges: number;
+  returnsRefunds: number;
+  operatingExpenses: number;
+  accessoriesConsumed: number;
+  /** Authoritative total from getFinancials — never recomputed here. */
+  combinedNetProfit: number;
+}
+
+export interface BusinessPnl {
+  darazNet: number;
+  estimatedDarazCogs: number;
+  /** Manual sales-only margin (before shared operating costs); 0 with no sales. */
+  manualSalesMargin: number;
+  hasManualSales: boolean;
+  operatingExpenses: number;
+  accessoriesConsumed: number;
+  /** The statement total = the authoritative combinedNetProfit. */
+  businessNetProfit: number;
+  /** Independent reconstruction of the total from the displayed lines. */
+  reconstructed: number;
+  /** True when the displayed lines reconcile to the authoritative total. */
+  reconciles: boolean;
+}
+
+export function buildBusinessPnl(i: BusinessPnlInput): BusinessPnl {
+  const manualSalesMargin = round2(
+    i.grossSales - i.productCost - i.commission - i.vat - i.otherDarazCharges - i.returnsRefunds
+  );
+  const reconstructed = round2(
+    i.darazNet - i.estimatedDarazCogs + manualSalesMargin - i.operatingExpenses - i.accessoriesConsumed
+  );
+  return {
+    darazNet: i.darazNet,
+    estimatedDarazCogs: i.estimatedDarazCogs,
+    manualSalesMargin,
+    hasManualSales: Math.round(manualSalesMargin * 100) !== 0,
+    operatingExpenses: i.operatingExpenses,
+    accessoriesConsumed: i.accessoriesConsumed,
+    businessNetProfit: i.combinedNetProfit,
+    reconstructed,
+    reconciles: reconstructed === round2(i.combinedNetProfit),
+  };
+}

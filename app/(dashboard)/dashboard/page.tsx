@@ -124,19 +124,19 @@ export default async function DashboardPage() {
           tone="negative"
         />
         <StatCard
-          label="Real Combined Net"
+          label="Est. Business Net Profit"
           value={formatMoneyCompact(fin.combinedNetProfit)}
-          hint="Manual + Daraz net − est. COGS"
+          hint="Daraz net − est. COGS − operating costs"
           icon={<PieChart size={18} />}
           tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
         />
         <StatCard
-          label="Yahya Share (50%)"
+          label="Est. Yahya Share (50%)"
           value={formatMoneyCompact(fin.yahyaShare)}
           tone="brand"
         />
         <StatCard
-          label="Owner Share (50%)"
+          label="Est. Owner Share (50%)"
           value={formatMoneyCompact(fin.ownerShare)}
           tone="brand"
         />

@@ -140,10 +140,11 @@ export function SalesManager({
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
-            Sales Income
+            Manual Sales
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            Manually entered from the Daraz Seller App. Stock reduces automatically.
+            Optional manual sales, separate from imported Daraz income. Stock reduces automatically.
+            Imported Daraz sales are not shown here — see the Business Profit &amp; Loss statement.
           </p>
         </div>
         <div className="flex gap-2">

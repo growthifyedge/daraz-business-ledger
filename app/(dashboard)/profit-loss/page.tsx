@@ -6,12 +6,13 @@ import { prisma } from '@/lib/prisma';
 import { Card, CardBody, CardHeader, PageHeader, StatCard } from '@/components/ui';
 import { FilterBar } from '@/components/FilterBar';
 import { DarazIncomeCard } from '@/components/DarazIncomeCard';
+import { buildBusinessPnl } from '@/lib/daraz/income';
 import { PnlExport } from './PnlExport';
 import { formatMoney, formatNumber } from '@/lib/utils';
 import { PROFIT_SPLIT } from '@/lib/config';
-import { Info, TrendingUp, Users, Wallet } from 'lucide-react';
+import { Info, TrendingUp, Users, Wallet, ChevronDown } from 'lucide-react';
 
-export const metadata = { title: 'Profit & Loss' };
+export const metadata = { title: 'Business Profit & Loss' };
 export const dynamic = 'force-dynamic';
 
 const yahyaPct = Math.round(PROFIT_SPLIT.yahya * 100);
@@ -35,165 +36,113 @@ export default async function ProfitLossPage({
   ]);
 
   const label = rangeLabel(filter);
-  const netPositive = fin.netProfit >= 0;
 
-  // Flattened rows for CSV / PDF export (plain numbers only).
+  // Presentation-only: derive the unified statement lines from existing figures.
+  const pnl = buildBusinessPnl({
+    darazNet: fin.daraz.net,
+    estimatedDarazCogs: fin.estimatedDarazCogs,
+    grossSales: fin.grossSales,
+    productCost: fin.productCost,
+    commission: fin.commission,
+    vat: fin.vat,
+    otherDarazCharges: fin.otherDarazCharges,
+    returnsRefunds: fin.returnsRefunds,
+    operatingExpenses: fin.operatingExpenses,
+    accessoriesConsumed: fin.accessoriesConsumed,
+    combinedNetProfit: fin.combinedNetProfit,
+  });
+  const manualSalesMargin = pnl.manualSalesMargin;
+  const hasManual = pnl.hasManualSales;
+  const combinedPositive = fin.combinedNetProfit >= 0;
+
+  // Flattened rows for CSV / PDF export — mirrors the unified statement.
   const exportRows = [
-    { item: 'Gross Sales', amount: fin.grossSales },
-    { item: 'Sales COGS', amount: -fin.salesCOGS },
-    { item: 'Recovered COGS (restocked)', amount: fin.recoveredCOGS },
-    { item: 'Net Product Cost', amount: -fin.netProductCost },
-    { item: 'Gross Profit', amount: fin.grossProfit },
-    { item: 'Daraz Commission', amount: -fin.commission },
-    { item: 'VAT', amount: -fin.vat },
-    { item: 'Other Daraz Charges', amount: -fin.otherDarazCharges },
-    { item: 'Returns / Refunds', amount: -fin.returnsRefunds },
+    { item: 'Daraz Net income', amount: fin.daraz.net },
+    { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
+    ...(hasManual ? [{ item: 'Manual Sales margin (optional)', amount: manualSalesMargin }] : []),
     { item: 'Operating Expenses', amount: -fin.operatingExpenses },
     { item: 'Accessories Consumed', amount: -fin.accessoriesConsumed },
-    { item: 'NET PROFIT (Manual)', amount: fin.netProfit },
-    { item: 'Daraz Import — net', amount: fin.daraz.net },
-    { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
-    { item: 'REAL COMBINED NET', amount: fin.combinedNetProfit },
-    { item: `Yahya Share (${yahyaPct}%)`, amount: fin.yahyaShare },
-    { item: `Owner Share (${ownerPct}%)`, amount: fin.ownerShare },
+    { item: 'ESTIMATED BUSINESS NET PROFIT', amount: fin.combinedNetProfit },
+    { item: `Estimated Yahya Share (${yahyaPct}%)`, amount: fin.yahyaShare },
+    { item: `Estimated Owner Share (${ownerPct}%)`, amount: fin.ownerShare },
+    { item: '— Daraz breakdown —', amount: 0 },
+    { item: 'Daraz gross revenue', amount: fin.daraz.grossRevenue },
+    { item: 'Daraz fees', amount: fin.daraz.darazFees },
+    { item: 'Daraz taxes withheld', amount: fin.daraz.taxesWithheld },
+    { item: 'Daraz refunds', amount: fin.daraz.refunds },
+    { item: 'Daraz reversals', amount: fin.daraz.reversals },
   ];
 
   return (
     <div>
-      <PageHeader
-        title="Profit & Loss"
-        description={`Statement for ${label}`}
-      >
-        <PnlExport
-          rows={exportRows}
-          title="Profit & Loss Statement"
-          subtitle={label}
-        />
+      <PageHeader title="Business Profit & Loss" description={`Estimated statement for ${label}`}>
+        <PnlExport rows={exportRows} title="Estimated Business Profit & Loss" subtitle={label} />
       </PageHeader>
 
       <FilterBar stores={stores} />
 
       <div className="grid gap-3 lg:grid-cols-3">
-        {/* Waterfall statement */}
+        {/* Unified statement */}
         <Card className="lg:col-span-2 overflow-hidden">
           <CardHeader
             title={
               <span className="flex items-center gap-1.5">
                 <TrendingUp className="h-4 w-4 text-brand-500" />
-                Profit &amp; Loss Statement — Manual channel
+                Estimated Business Profit &amp; Loss
               </span>
             }
-            subtitle={`Source: Manual Sales · ${formatNumber(fin.unitsSold)} units sold · ${label}`}
+            subtitle={`Daraz income costed at product purchase cost (estimated) · ${label}`}
           />
           <CardBody className="p-0">
             <dl className="divide-y divide-slate-100">
-              <PnlLine
-                label="Gross Sales"
-                amount={fin.grossSales}
-                bold
-              />
-              <PnlLine label="Sales COGS" amount={fin.salesCOGS} deduction />
-              {fin.recoveredCOGS > 0 && (
-                <PnlLine
-                  label="Recovered COGS (restocked returns)"
-                  amount={fin.recoveredCOGS}
-                />
+              <PnlLine label="Daraz Net income" amount={fin.daraz.net} bold />
+              <PnlLine label="Estimated Daraz COGS (Delivered)" amount={fin.estimatedDarazCogs} deduction />
+              {hasManual && (
+                <PnlLine label="Manual Sales margin (optional, separate channel)" amount={manualSalesMargin} />
               )}
+              <PnlLine label="Operating Expenses" amount={fin.operatingExpenses} deduction />
+              <PnlLine label="Accessories Consumed" amount={fin.accessoriesConsumed} deduction />
               <PnlLine
-                label="Net Product Cost"
-                amount={fin.netProductCost}
-                deduction
-              />
-              <PnlLine
-                label="Gross Profit"
-                amount={fin.grossProfit}
-                subtotal
-              />
-              <PnlLine
-                label="Daraz Commission"
-                amount={fin.commission}
-                deduction
-              />
-              <PnlLine label="VAT" amount={fin.vat} deduction />
-              <PnlLine
-                label="Other Daraz Charges"
-                amount={fin.otherDarazCharges}
-                deduction
-              />
-              <PnlLine
-                label="Returns / Refunds (seller-borne)"
-                amount={fin.returnsRefunds}
-                deduction
-              />
-              <PnlLine
-                label="Operating Expenses"
-                amount={fin.operatingExpenses}
-                deduction
-              />
-              <PnlLine
-                label="Accessories Consumed"
-                amount={fin.accessoriesConsumed}
-                deduction
-              />
-              <PnlLine
-                label="Net Profit"
-                amount={fin.netProfit}
+                label="Estimated Business Net Profit"
+                amount={fin.combinedNetProfit}
                 total
-                positive={netPositive}
+                positive={combinedPositive}
               />
             </dl>
+
+            {/* Expandable Daraz breakdown — gross revenue, fees, taxes, refunds, reversals */}
+            <details className="group border-t border-slate-100">
+              <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5">
+                <span>Daraz breakdown (gross revenue, fees, taxes, refunds, reversals)</span>
+                <ChevronDown className="h-4 w-4 shrink-0 transition group-open:rotate-180" />
+              </summary>
+              <div className="p-4 sm:p-5">
+                <DarazIncomeCard rollup={fin.daraz} subtitle={`Imported Daraz income · ${label}`} />
+              </div>
+            </details>
           </CardBody>
         </Card>
 
-        {/* Net profit highlight + profit split */}
+        {/* Net profit highlight + estimated profit split */}
         <div className="flex flex-col gap-3">
           <Card
             className={
-              fin.combinedNetProfit >= 0
+              combinedPositive
                 ? 'border-emerald-100 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
                 : 'border-rose-100 bg-gradient-to-br from-rose-500 to-rose-600 text-white'
             }
           >
             <CardBody>
               <p className="text-xs font-medium uppercase tracking-wide text-white/80">
-                Real Combined Net Profit
+                Estimated Business Net Profit
               </p>
-              <p className="mt-1 text-3xl font-bold tabular-nums">
-                {formatMoney(fin.combinedNetProfit)}
-              </p>
+              <p className="mt-1 text-3xl font-bold tabular-nums">{formatMoney(fin.combinedNetProfit)}</p>
               <p className="mt-1 text-xs text-white/80">
-                Manual net {formatMoney(fin.netProfit)} + Daraz net − est. COGS · {label}
+                Daraz net − est. COGS − operating costs · {label}
               </p>
             </CardBody>
           </Card>
 
-          <StatCard
-            label={`Yahya Share (${yahyaPct}%)`}
-            value={formatMoney(fin.yahyaShare)}
-            hint={`${yahyaPct}% of real combined net`}
-            icon={<Users size={18} />}
-            tone="brand"
-          />
-          <StatCard
-            label={`Owner Share (${ownerPct}%)`}
-            value={formatMoney(fin.ownerShare)}
-            hint={`${ownerPct}% of real combined net`}
-            icon={<Wallet size={18} />}
-            tone="brand"
-          />
-          <p className="px-1 text-xs text-slate-400">
-            The {yahyaPct}/{ownerPct} split now applies to the real combined net
-            (manual + Daraz − estimated Daraz COGS).
-          </p>
-        </div>
-      </div>
-
-      {/* Daraz Import channel (separate from manual Sales above) */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <DarazIncomeCard rollup={fin.daraz} subtitle={`Imported Daraz income · ${label}`} />
-        </div>
-        <div className="flex flex-col gap-3">
           <StatCard
             label="Estimated Daraz COGS"
             value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
@@ -201,16 +150,23 @@ export default async function ProfitLossPage({
             tone="negative"
           />
           <StatCard
-            label="Real combined net"
-            value={formatMoney(fin.combinedNetProfit)}
-            hint="Manual net + Daraz net − est. Daraz COGS"
+            label={`Estimated Yahya Share (${yahyaPct}%)`}
+            value={formatMoney(fin.yahyaShare)}
+            hint={`${yahyaPct}% of estimated business net`}
+            icon={<Users size={18} />}
+            tone="brand"
+          />
+          <StatCard
+            label={`Estimated Owner Share (${ownerPct}%)`}
+            value={formatMoney(fin.ownerShare)}
+            hint={`${ownerPct}% of estimated business net`}
+            icon={<Wallet size={18} />}
             tone="brand"
           />
           {(fin.darazCogs.unmappedUnits > 0 || fin.darazCogs.missingCostUnits > 0) && (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              Estimated: {formatNumber(fin.darazCogs.unmappedUnits)} delivered unit(s) unmapped,{' '}
-              {formatNumber(fin.darazCogs.missingCostUnits)} mapped but no cost — excluded from COGS.
-              Historic purchase lots are incomplete, so this is an estimate (flat purchase cost, no FIFO).
+              {formatNumber(fin.darazCogs.unmappedUnits)} delivered unit(s) unmapped,{' '}
+              {formatNumber(fin.darazCogs.missingCostUnits)} mapped without a cost — excluded from COGS.
             </p>
           )}
         </div>
@@ -222,23 +178,18 @@ export default async function ProfitLossPage({
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
           <div className="space-y-1 text-xs leading-relaxed text-slate-500">
             <p>
-              <span className="font-semibold text-slate-600">
-                How this is calculated.
-              </span>{' '}
-              To avoid double counting, Daraz commission, VAT, other Daraz
-              charges and product cost (COGS) are taken from the Sales entries.
+              <span className="font-semibold text-slate-600">Estimated.</span> Daraz income is the
+              Daraz-authoritative net (commission, fees, taxes, refunds and reversals already inside
+              it). COGS for delivered Daraz orders is estimated at each product&rsquo;s purchase cost —
+              historic purchase lots are incomplete, so it is not yet date-aware FIFO. All net-profit
+              and share figures are therefore <span className="font-semibold">Estimated</span> until
+              FIFO purchase costing is available.
             </p>
             <p>
-              Operating expenses exclude those Daraz-side categories (they are
-              already captured in Sales), and accessories consumed = quantity
-              used × unit cost.
-            </p>
-            <p>
-              <span className="font-semibold text-slate-600">Manual vs Daraz Import.</span>{' '}
-              The statement above is the manual Sales channel. Imported Daraz
-              income is shown separately as its own channel — its commission,
-              fees and refunds are already inside the Daraz net, and a Return
-              linked to imported income never deducts that refund again.
+              <span className="font-semibold text-slate-600">Manual Sales are separate.</span> Any
+              manually-entered sales appear only as the optional &ldquo;Manual Sales margin&rdquo; line
+              above (and on the Manual Sales page) — they are not a competing P&amp;L. A Return linked
+              to imported Daraz income never deducts its refund again.
             </p>
           </div>
         </CardBody>
@@ -288,20 +239,14 @@ function PnlLine({
     rowClass =
       'flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3 sm:px-5';
     labelClass = 'text-sm font-semibold text-slate-800';
-    amountClass = `text-sm font-bold tabular-nums ${
-      amount >= 0 ? 'text-slate-900' : 'text-rose-600'
-    }`;
+    amountClass = `text-sm font-bold tabular-nums ${amount >= 0 ? 'text-slate-900' : 'text-rose-600'}`;
     prefix = <span className="mr-1 font-semibold text-slate-400">=</span>;
   }
 
   if (total) {
-    rowClass =
-      'flex items-center justify-between gap-3 border-t-2 border-slate-300 px-4 py-4 sm:px-5';
-    labelClass =
-      'text-sm font-bold uppercase tracking-wide text-slate-800 sm:text-base';
-    amountClass = `text-2xl font-bold tabular-nums ${
-      positive ? 'text-emerald-600' : 'text-rose-600'
-    }`;
+    rowClass = 'flex items-center justify-between gap-3 border-t-2 border-slate-300 px-4 py-4 sm:px-5';
+    labelClass = 'text-sm font-bold uppercase tracking-wide text-slate-800 sm:text-base';
+    amountClass = `text-2xl font-bold tabular-nums ${positive ? 'text-emerald-600' : 'text-rose-600'}`;
     prefix = <span className="mr-1 font-semibold text-slate-400">=</span>;
   }
 
