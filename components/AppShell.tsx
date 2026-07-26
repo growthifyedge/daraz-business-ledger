@@ -38,7 +38,7 @@ const NAV = [
   { href: '/returns', label: 'Returns & Refunds', icon: Undo2 },
   { href: '/expenses', label: 'Expenses', icon: Receipt },
   { href: '/accessories', label: 'Accessories', icon: Boxes },
-  { href: '/settlements', label: 'Daraz Settlements', icon: Banknote },
+  { href: '/payouts', label: 'Daraz Payouts', icon: Banknote },
   { href: '/statements', label: 'Daraz Statements', icon: FileText },
   { href: '/profit-loss', label: 'Profit & Loss', icon: PieChart },
   { href: '/cash-flow', label: 'Cash Flow', icon: Wallet },
