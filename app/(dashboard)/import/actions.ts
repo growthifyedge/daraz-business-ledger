@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/prisma';
 import { requireOwner } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
+import { normalizeSellerSku } from '@/lib/daraz/fees';
 
 export interface MappingResult {
   ok: boolean;
@@ -28,7 +29,7 @@ export async function saveDarazSkuMapping(
   storeId: string
 ): Promise<MappingResult> {
   const user = await requireOwner();
-  const sku = String(sellerSku ?? '').trim();
+  const sku = normalizeSellerSku(sellerSku);
   const pid = String(productId ?? '').trim();
   const sid = String(storeId ?? '').trim();
   if (!sid) return { ok: false, error: 'Select a store for this mapping.' };

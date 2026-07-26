@@ -126,3 +126,14 @@ export function sumByCategory(fees: CategorisedFee[]): Record<FeeCategory, numbe
 export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
+
+/**
+ * The single canonical Seller-SKU normalizer. Every path that stores, resolves
+ * or maps a Daraz Seller SKU MUST go through this so a SKU keyed at Purchase
+ * time matches the one Daraz Import / COGS resolve later. Kept intentionally
+ * conservative (trim only) — Daraz SKUs are case- and punctuation-significant,
+ * so we do not lower-case or strip anything else.
+ */
+export function normalizeSellerSku(value: string | null | undefined): string {
+  return String(value ?? '').trim();
+}
