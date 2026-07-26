@@ -212,6 +212,8 @@ export interface DeliveredOrderLine {
   /** Order date (createTime) — used for date scoping. */
   orderDate?: Date | string | null;
   quantity: number;
+  /** Daraz Order Line ID — used to match the line to settled income. */
+  orderItemId?: string | null;
 }
 
 export interface SkuMappingRow {
@@ -256,12 +258,21 @@ function orderInScope(l: DeliveredOrderLine, f: IncomeRollupFilter): boolean {
  * each line's product via the saved (storeId, sellerSku) mapping and costs it at
  * the product's purchaseCost. Reports coverage so the UI can label it estimated.
  * Pure — never writes or mutates its inputs.
+ *
+ * `settledOrderItemIds` mirrors the dry-run's income-driven population: when
+ * provided, only delivered lines whose orderItemId has settled income (appears
+ * on a statement) are costed. A delivered order line with no income line has no
+ * booked revenue in `daraz.net`, so it must not be costed — and must not be
+ * reported as an unmapped delivered unit. This is what makes COGS reconcile with
+ * the Import dry-run: 0 unresolved SKUs there ⇒ 0 unmapped delivered units here.
+ * Omit it (or pass null) to cost every delivered line (legacy behaviour).
  */
 export function estimateDarazCogs(
   lines: DeliveredOrderLine[],
   mappings: SkuMappingRow[],
   products: ProductCostRow[],
-  filter: IncomeRollupFilter = {}
+  filter: IncomeRollupFilter = {},
+  settledOrderItemIds?: Set<string> | null
 ): DarazCogsEstimate {
   const skuToProduct = new Map(mappings.map((m) => [mapKey(m.storeId, m.sellerSku), m.productId]));
   const costById = new Map(products.map((p) => [p.id, p.purchaseCost]));
@@ -276,6 +287,9 @@ export function estimateDarazCogs(
   for (const l of lines) {
     if (!isDeliveredExact(l.status)) continue; // Delivered-only
     if (!orderInScope(l, filter)) continue;
+    // Income-scoped: skip delivered lines with no settled income (their revenue
+    // is not in daraz.net). Only applied when the caller supplies the set.
+    if (settledOrderItemIds && !(l.orderItemId && settledOrderItemIds.has(l.orderItemId))) continue;
     const qty = Number.isInteger(l.quantity) && l.quantity > 0 ? l.quantity : 1;
     deliveredUnits += qty;
 
