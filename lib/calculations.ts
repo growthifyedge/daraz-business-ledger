@@ -352,16 +352,25 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   };
   if (f.storeId) deliveredWhere.storeId = f.storeId;
   if (range) deliveredWhere.createTime = range;
-  const [deliveredLines, skuMappings, productCosts] = await Promise.all([
+  const [deliveredLines, skuMappings, productCosts, settledRows] = await Promise.all([
     prisma.darazOrderItem.findMany({
       where: deliveredWhere,
-      select: { storeId: true, sellerSku: true, status: true, createTime: true, quantity: true },
+      select: { orderItemId: true, storeId: true, sellerSku: true, status: true, createTime: true, quantity: true },
     }),
     prisma.darazSkuMapping.findMany({ select: { storeId: true, sellerSku: true, productId: true } }),
     prisma.product.findMany({ where: { deletedAt: null }, select: { id: true, purchaseCost: true } }),
+    // Order items that have settled income (appear on a statement). COGS is
+    // costed only for these — mirroring the Import dry-run, whose SKU resolution
+    // is driven by income lines — so a delivered order with no booked income is
+    // neither costed nor reported as an unmapped delivered unit. Matched by
+    // orderItemId only (income storeId is nullable / partly backfilled); the
+    // delivered order item is already store+date scoped above.
+    prisma.darazIncomeLine.findMany({ select: { orderItemId: true }, distinct: ['orderItemId'] }),
   ]);
+  const settledOrderItemIds = new Set(settledRows.map((r) => r.orderItemId));
   const darazCogs = estimateDarazCogs(
     deliveredLines.map((l) => ({
+      orderItemId: l.orderItemId,
       storeId: l.storeId,
       sellerSku: l.sellerSku,
       status: l.status,
@@ -369,7 +378,9 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
       quantity: l.quantity,
     })),
     skuMappings.map((m) => ({ storeId: m.storeId, sellerSku: m.sellerSku, productId: m.productId })),
-    productCosts
+    productCosts,
+    {},
+    settledOrderItemIds
   );
   const estimatedDarazCogs = darazCogs.estimatedCogs;
   const combinedNetProfit =

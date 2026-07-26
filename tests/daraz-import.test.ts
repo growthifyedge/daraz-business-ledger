@@ -22,6 +22,7 @@ import {
 import { summariseStatements } from '../lib/daraz/statements';
 import { batchFingerprint, sha256Hex } from '../lib/daraz/fingerprint';
 import { refundCountsInPnl, sellerLossForPnl, isEligibleForPnl } from '../lib/returns';
+import { estimateDarazCogs, type DeliveredOrderLine } from '../lib/daraz/income';
 
 // Narrowing helpers: stock/COGS become "unavailable" (a string) until every SKU
 // is mapped; these assert the available shape for the fully-mapped cases below.
@@ -529,4 +530,63 @@ test('statements: each summary carries its assigned store; unattributed → "", 
   assert.equal(by['ST-D'], 'Multiple');
   // Store attribution never changes amounts.
   assert.equal(s.find((x) => x.statementNumber === 'ST-A')!.netPayout, 200);
+});
+
+// ===========================================================================
+// Regression: COGS is income-scoped, exactly like the Import dry-run.
+//
+// Live bug: GrowthifyEdge dry-run showed 0 unresolved Seller SKUs, but P&L COGS
+// reported "32 delivered unit(s) unmapped". Root cause: the dry-run resolves
+// SKUs over INCOME (statement) lines, while COGS scanned EVERY delivered order
+// item — including delivered orders that had never settled (no income line) and
+// whose SKU was never mapped. Their revenue is not in daraz.net, so they must
+// not be costed nor flagged. estimateDarazCogs now takes the settled-order-item
+// set (order items that appear on a statement) and costs only those.
+// ===========================================================================
+
+test('regression: 0 dry-run unresolved SKUs ⇒ 0 unmapped delivered units (income-scoped COGS)', () => {
+  // Add a DELIVERED order line with NO income line and an UNMAPPED SKU — the
+  // exact orphan case. It is order-only, so the dry-run never evaluates its SKU.
+  const orders: SanitizedOrderRecord[] = [
+    ...ORDERS,
+    sOrder('OI-ORPHAN', 'SKU-UNMAPPED', 'Delivered', 'ORD-9'),
+  ];
+  const incomeLines = buildIncomeLines(parseIncomeCsv(CSV));
+  const dr = computeDryRun({
+    storeId: STORE,
+    incomeLines,
+    orders,
+    skuMappings: MAPPINGS,
+    products: PRODUCTS,
+    alreadyImported: new Set(),
+    batchAlreadyImported: false,
+  });
+  assert.equal(dr.totals.unresolvedSkus, 0); // every income-line SKU resolves
+
+  // What calculations.ts feeds COGS: the delivered order items, plus the set of
+  // order items that have settled income (from DarazIncomeLine).
+  const deliveredForCogs: DeliveredOrderLine[] = orders
+    .filter((o) => (o.status ?? '').toLowerCase() === 'delivered')
+    .map((o) => ({
+      orderItemId: o.orderItemId,
+      storeId: STORE,
+      sellerSku: o.sellerSku,
+      status: o.status,
+      orderDate: o.orderDate,
+      quantity: o.quantity,
+    }));
+  const settled = new Set(incomeLines.map((il) => il.orderItemId));
+  const costs = PRODUCTS.map((p) => ({ id: p.id, purchaseCost: p.purchaseCost }));
+
+  const cogs = estimateDarazCogs(deliveredForCogs, MAPPINGS, costs, {}, settled);
+  assert.equal(cogs.unmappedUnits, 0); // ← reconciles with the dry-run's 0 unresolved
+  assert.equal(cogs.deliveredUnits, 1); // only OI-1 (delivered + settled); orphan excluded
+  assert.equal(cogs.costedUnits, 1);
+  assert.equal(cogs.estimatedCogs, 100);
+
+  // Guard: pre-fix behaviour (no settled set) mis-flags the orphan delivered
+  // unit as unmapped — the exact symptom being fixed.
+  const legacy = estimateDarazCogs(deliveredForCogs, MAPPINGS, costs);
+  assert.equal(legacy.deliveredUnits, 2);
+  assert.equal(legacy.unmappedUnits, 1);
 });
