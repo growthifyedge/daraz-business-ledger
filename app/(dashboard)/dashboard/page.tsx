@@ -147,18 +147,18 @@ export default async function DashboardPage() {
         <CardBody className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-brand-100">
-              Cash in Hand / Available Balance
+              Net Cash Movement (All Stores)
             </p>
             <p className="mt-1 text-3xl font-bold tabular-nums">
-              {formatMoney(cash.netCashBalance)}
+              {formatMoney(cash.netCashMovement)}
             </p>
           </div>
           <div className="text-right text-xs text-brand-100">
-            <p>Investment + settlements received</p>
+            <p>Investment + Daraz released</p>
             <p>− reimbursements, expenses & payouts</p>
-            {cash.stockPurchaseUnpaid > 0 && (
+            {cash.owedToYahya > 0 && (
               <p className="mt-1 font-semibold text-amber-200">
-                {formatMoney(cash.stockPurchaseUnpaid)} payable to Yahya
+                {formatMoney(cash.owedToYahya)} owed to Yahya for stock
               </p>
             )}
             {cash.reconciliationPending > 0 && (

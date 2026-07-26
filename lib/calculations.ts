@@ -4,12 +4,19 @@ import { saleCogs, returnRecoveredCogs, sellerLossForPnl } from './returns';
 import { combineYahyaCash, type YahyaCashSummary } from './yahyaPayments';
 import {
   rollUpDarazIncome,
-  isReleased,
   estimateDarazCogs,
   type DarazIncomeRollup,
   type DarazCogsEstimate,
 } from './daraz/income';
-import type { Prisma, ExpenseCategory, PaymentStatus } from '@prisma/client';
+import {
+  sumStoreScopedCosts,
+  sumReleasedNet,
+  sumReadyToReleaseNet,
+  buildCashFlow,
+  type CashFlowSections,
+} from './cashflow';
+import { round2 } from './daraz/fees';
+import type { Prisma, ExpenseCategory, PaymentStatus, CashParty } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
 // Shared filtering
@@ -302,16 +309,20 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   // Consumption has no per-use date in the schema, so it is attributed to the
   // accessory's purchaseDate — this keeps period P&L date-bounded instead of
   // always subtracting all-time consumption. (Precise consumption dating is a
-  // later phase.) Not store-attributable, so store filter does not apply here.
+  // later phase.) Accessories carry NO storeId — they are unassigned/global — so
+  // in a single-store view they must NOT be deducted from that one store's
+  // profit (that was a cross-store leak). sumStoreScopedCosts treats null-store
+  // rows as global: excluded when a store filter is active, included in All
+  // Stores. Expenses above already scope the same way via their storeId column.
   const accessoryWhere: Prisma.AccessoryWhereInput = { deletedAt: null };
   if (range) accessoryWhere.purchaseDate = range;
   const accessories = await prisma.accessory.findMany({
     where: accessoryWhere,
     select: { quantityUsed: true, unitCost: true },
   });
-  const accessoriesConsumed = accessories.reduce(
-    (sum, a) => sum + a.quantityUsed * a.unitCost,
-    0
+  const accessoriesConsumed = sumStoreScopedCosts(
+    accessories.map((a) => ({ storeId: null, amount: a.quantityUsed * a.unitCost })),
+    f.storeId ?? null
   );
 
   const grossProfit = grossSales - productCost;
@@ -453,20 +464,11 @@ export async function getStockValue(): Promise<StockValue> {
 // Cash flow
 // ---------------------------------------------------------------------------
 
-export interface CashFlow {
-  investment: number; // money owner put in
-  settlementsReceived: number; // money from Daraz — MANUAL Settlement entries
-  /** Daraz Import channel: net of income lines marked Released (cash realised). */
-  darazReleasedNet: number;
-  reimbursementsPaid: number; // paid to Yahya for purchases
-  stockPurchaseUnpaid: number; // owed to Yahya (unpaid purchases)
-  // Purchases paid in reality but amount/date not yet reconciled. Shown for
-  // transparency only — NOT owed, NOT a settled payment, NO net-cash impact.
-  reconciliationPending: number;
-  expensesPaid: number; // all logged expenses
-  payoutsPaid: number; // profit-share payouts
-  netCashBalance: number;
-}
+/** Cash Flow is the pure CashFlowSections (see lib/cashflow.ts) — three groups:
+ *  A actual cash movement · B expected Daraz (not cash) · C obligations (not
+ *  cash). There is NO manual-Settlement field: legacy Settlement rows are never
+ *  queried or added here. */
+export type CashFlow = CashFlowSections;
 
 const PAYABLE_STATUSES: PaymentStatus[] = ['UNPAID', 'PARTIALLY_PAID'];
 
@@ -533,13 +535,10 @@ export async function getYahyaCashSummary(f: Filter = {}): Promise<YahyaCashSumm
 
 export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const range = dateRange(f.from, f.to);
+  const isStoreFiltered = !!f.storeId;
 
   const investmentWhere: Prisma.InvestmentWhereInput = { deletedAt: null };
   if (range) investmentWhere.date = range;
-
-  const settlementWhere: Prisma.SettlementWhereInput = { deletedAt: null };
-  if (range) settlementWhere.date = range;
-  if (f.storeId) settlementWhere.storeId = f.storeId;
 
   const expenseWhere: Prisma.ExpenseWhereInput = { deletedAt: null };
   if (range) expenseWhere.date = range;
@@ -548,63 +547,46 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const payoutWhere: Prisma.PayoutWhereInput = { deletedAt: null };
   if (range) payoutWhere.date = range;
 
-  // Daraz Import money-in: ONLY income lines whose release status is Released.
+  // Daraz money-in is store/date scoped; Released is realised cash, Ready to
+  // Release is expected only. Legacy manual Settlement rows are intentionally
+  // NOT queried here — they are obsolete and would double-count imported income.
   const incomeWhere: Prisma.DarazIncomeLineWhereInput = {};
   if (range) incomeWhere.transactionDate = range;
   if (f.storeId) incomeWhere.storeId = f.storeId;
 
-  const [inv, settle, exp, payout, yahya, incomeRows] = await Promise.all([
+  const [inv, exp, payoutByParty, yahya, fin, incomeRows] = await Promise.all([
     prisma.investment.aggregate({ where: investmentWhere, _sum: { amount: true } }),
-    prisma.settlement.aggregate({ where: settlementWhere, _sum: { netAmount: true } }),
     prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
-    prisma.payout.aggregate({ where: payoutWhere, _sum: { amount: true } }),
+    prisma.payout.groupBy({ by: ['party'], where: payoutWhere, _sum: { amount: true } }),
     getYahyaCashSummary(f), // shared source — payments + legacy, payable, pending
-    prisma.darazIncomeLine.findMany({ where: incomeWhere, select: { releaseStatus: true, netAmount: true } }),
+    getFinancials(f), // accrued Yahya/Owner profit shares (store/date scoped)
+    prisma.darazIncomeLine.findMany({
+      where: incomeWhere,
+      select: { releaseStatus: true, netAmount: true },
+    }),
   ]);
 
-  const investment = inv._sum.amount ?? 0;
-  const settlementsReceived = settle._sum.netAmount ?? 0;
-  const expensesPaid = exp._sum.amount ?? 0;
-  const payoutsPaid = payout._sum.amount ?? 0;
-  // Realised Daraz cash: net of Released income lines only (accrual vs cash).
-  const darazReleasedNet =
-    Math.round(
-      (incomeRows.filter((l) => isReleased(l.releaseStatus)).reduce((s, l) => s + l.netAmount, 0) +
-        Number.EPSILON) *
-        100
-    ) / 100;
-  // Actual cash paid to Yahya: each bank transfer counted once + legacy PAID.
-  const reimbursementsPaid = yahya.actualPaidToYahya;
-  // Yahya Debt = Total Purchased (all statuses, incl. RECONCILIATION_PENDING)
-  // − actual Paid to Yahya. This owed figure now folds in reconciliation-pending
-  // purchases; recording a payment reduces it directly.
-  const stockPurchaseUnpaid = yahya.payableToYahya;
-  // Still surfaced on its own for the "reconciliation pending" badge. It is not
-  // added into netCashBalance below (that nets only actual cash movements).
-  const reconciliationPending = yahya.reconciliationPending;
+  const paidByParty = (party: CashParty) =>
+    payoutByParty.find((p) => p.party === party)?._sum.amount ?? 0;
+  const profitPayoutsPaid = payoutByParty.reduce((s, p) => s + (p._sum.amount ?? 0), 0);
+  // Profit payouts carry no store; in a single-store view we cannot attribute
+  // them, so accrued-share-unpaid subtracts them only in All Stores.
+  const yahyaShareUnpaid = round2(fin.yahyaShare - (isStoreFiltered ? 0 : paidByParty('YAHYA')));
+  const ownerShareUnpaid = round2(fin.ownerShare - (isStoreFiltered ? 0 : paidByParty('OWNER')));
 
-  // Cash in hand = money in (investment + manual settlements + released Daraz
-  // net) − money out (reimbursements to Yahya + non-purchase expenses + payouts).
-  // reconciliationPending is intentionally NOT part of this.
-  const netCashBalance =
-    investment +
-    settlementsReceived +
-    darazReleasedNet -
-    reimbursementsPaid -
-    expensesPaid -
-    payoutsPaid;
-
-  return {
-    investment,
-    settlementsReceived,
-    darazReleasedNet,
-    reimbursementsPaid,
-    stockPurchaseUnpaid,
-    reconciliationPending,
-    expensesPaid,
-    payoutsPaid,
-    netCashBalance,
-  };
+  return buildCashFlow({
+    investment: inv._sum.amount ?? 0, // global
+    darazReleasedNet: sumReleasedNet(incomeRows), // actual cash in (Released only)
+    reimbursedToYahya: yahya.actualPaidToYahya, // actual cash out (stock reimbursement)
+    expensesPaid: exp._sum.amount ?? 0, // actual cash out
+    profitPayoutsPaid, // global, actual cash out
+    darazReadyToReleaseNet: sumReadyToReleaseNet(incomeRows), // expected only, NOT cash
+    owedToYahya: yahya.payableToYahya, // debt, NOT cash
+    reconciliationPending: yahya.reconciliationPending, // info only
+    yahyaShareUnpaid, // accrued obligation, NOT cash
+    ownerShareUnpaid, // accrued obligation, NOT cash
+    isStoreFiltered,
+  });
 }
 
 // ---------------------------------------------------------------------------
