@@ -39,13 +39,16 @@ export default async function CashFlowReportPage({
   ]);
 
   const rows = [
-    { item: 'Investment in', amount: cf.investment },
-    { item: 'Settlements received (Manual)', amount: cf.settlementsReceived },
-    { item: 'Daraz released net (Daraz Import)', amount: cf.darazReleasedNet },
-    { item: 'Paid to Yahya (transfers + legacy)', amount: -cf.reimbursementsPaid },
-    { item: 'Expenses paid', amount: -cf.expensesPaid },
-    { item: 'Payouts paid', amount: -cf.payoutsPaid },
-    { item: 'Net Cash Balance', amount: cf.netCashBalance },
+    { item: 'Owner investment (in)', amount: cf.investment },
+    { item: 'Daraz Released payouts (in)', amount: cf.darazReleasedNet },
+    { item: 'Reimbursed to Yahya for stock purchases (out)', amount: -cf.reimbursedToYahya },
+    { item: 'Expenses paid (out)', amount: -cf.expensesPaid },
+    { item: 'Profit payouts paid (out)', amount: -cf.profitPayoutsPaid },
+    { item: 'Net Cash Movement', amount: cf.netCashMovement },
+    { item: 'Expected Daraz — Ready to Release (not cash)', amount: cf.darazReadyToReleaseNet },
+    { item: 'Owed to Yahya for stock (obligation)', amount: cf.owedToYahya },
+    { item: 'Yahya profit share earned, unpaid (obligation)', amount: cf.yahyaShareUnpaid },
+    { item: 'Owner profit share earned, unpaid (obligation)', amount: cf.ownerShareUnpaid },
   ];
 
   const columns = [
@@ -67,22 +70,26 @@ export default async function CashFlowReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Money In" value={formatMoney(cf.investment + cf.settlementsReceived + cf.darazReleasedNet)} tone="positive" />
         <StatCard
-          label="Money Out"
-          value={formatMoney(cf.reimbursementsPaid + cf.expensesPaid + cf.payoutsPaid)}
+          label="Cash In"
+          value={formatMoney(cf.investment + cf.darazReleasedNet)}
+          tone="positive"
+        />
+        <StatCard
+          label="Cash Out"
+          value={formatMoney(cf.reimbursedToYahya + cf.expensesPaid + cf.profitPayoutsPaid)}
           tone="negative"
         />
-        <StatCard label="Payable to Yahya" value={formatMoney(cf.stockPurchaseUnpaid)} tone="warning" />
+        <StatCard label="Owed to Yahya (stock)" value={formatMoney(cf.owedToYahya)} tone="warning" />
         <StatCard
-          label="Payment reconciliation pending"
-          value={formatMoney(cf.reconciliationPending)}
-          tone={cf.reconciliationPending > 0 ? 'warning' : 'default'}
+          label="Expected Daraz (Ready to Release)"
+          value={formatMoney(cf.darazReadyToReleaseNet)}
+          tone={cf.darazReadyToReleaseNet > 0 ? 'warning' : 'default'}
         />
         <StatCard
-          label="Net Cash Balance"
-          value={formatMoney(cf.netCashBalance)}
-          tone={cf.netCashBalance >= 0 ? 'brand' : 'negative'}
+          label="Net Cash Movement"
+          value={formatMoney(cf.netCashMovement)}
+          tone={cf.netCashMovement >= 0 ? 'brand' : 'negative'}
         />
       </div>
 
