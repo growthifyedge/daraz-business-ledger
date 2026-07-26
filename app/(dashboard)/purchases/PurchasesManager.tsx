@@ -1,9 +1,9 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
-import { Plus, Pencil, ShoppingCart, FileText, Banknote } from 'lucide-react';
+import { Plus, Pencil, ShoppingCart, FileText, Banknote, Tag } from 'lucide-react';
 import type { PaymentStatus } from '@prisma/client';
-import { savePurchase, deletePurchase } from './actions';
+import { savePurchase, saveNewProductPurchase, deletePurchase } from './actions';
 import { BulkPurchaseUpload } from './BulkPurchaseUpload';
 import { YahyaPayments, type PaymentRecord, type PaymentView } from './YahyaPayments';
 import { initialFormState } from '@/lib/formState';
@@ -79,22 +79,28 @@ export function PurchasesManager({
   // The manual New Purchase form does not offer PARTIALLY_PAID (that is derived
   // from Yahya payment allocations, never set by hand).
   const [status, setStatus] = useState<NewPurchaseStatus>('UNPAID');
+  // Which purchase mode the modal shows when creating: an existing ledger
+  // product (default) or create a brand-new product while recording the purchase.
+  const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [state, formAction] = useActionState(savePurchase, initialFormState);
+  const [newState, newFormAction] = useActionState(saveNewProductPurchase, initialFormState);
 
   useEffect(() => {
-    if (state.ok) {
+    if (state.ok || newState.ok) {
       setOpen(false);
       setEditing(null);
     }
-  }, [state.ok, state.ts]);
+  }, [state.ok, state.ts, newState.ok, newState.ts]);
 
   function openNew() {
     setEditing(null);
     setStatus('UNPAID');
+    setMode('existing');
     setOpen(true);
   }
   function openEdit(row: PurchaseRow) {
     setEditing(row);
+    setMode('existing'); // editing is always an existing product
     // PARTIALLY_PAID is derived from payments — the manual select can't set it.
     setStatus(row.paymentStatus === 'PARTIALLY_PAID' ? 'UNPAID' : row.paymentStatus);
     setOpen(true);
@@ -267,108 +273,259 @@ export function PurchasesManager({
         description="Recording adds stock to the product automatically."
         size="lg"
       >
-        <form action={formAction} className="flex flex-col gap-4">
-          {editing && <input type="hidden" name="id" value={editing.id} />}
-          {state.error && (
-            <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              {state.error}
-            </p>
-          )}
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Purchase date" required>
-              <Input
-                name="date"
-                type="date"
-                defaultValue={toDateInput(editing?.date ?? new Date())}
-                required
-              />
-            </Field>
-            <Field label="Purchased by">
-              <Input name="purchasedBy" defaultValue={editing?.purchasedBy ?? 'Yahya'} />
-            </Field>
-            <Field label="Product" required>
-              <Select name="productId" defaultValue={editing?.productId ?? ''} required>
-                <option value="">Select product…</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Store (optional)">
-              <Select name="storeId" defaultValue={editing?.storeId ?? ''}>
-                <option value="">—</option>
-                {stores.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Quantity" required>
-              <Input
-                name="quantity"
-                type="number"
-                min="1"
-                defaultValue={editing?.quantity ?? ''}
-                required
-              />
-            </Field>
-            <Field label="Unit cost" required>
-              <Input
-                name="unitCost"
-                type="number"
-                step="0.01"
-                min="0"
-                defaultValue={editing?.unitCost ?? ''}
-                required
-              />
-            </Field>
+        {/* Mode toggle — only when creating. Editing is always existing-product. */}
+        {!editing && (
+          <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-sm">
+            <button
+              type="button"
+              onClick={() => setMode('existing')}
+              className={
+                mode === 'existing'
+                  ? 'rounded-md bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm'
+                  : 'rounded-md px-3 py-1.5 text-slate-500 hover:text-slate-700'
+              }
+            >
+              Existing product
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('new')}
+              className={
+                mode === 'new'
+                  ? 'rounded-md bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm'
+                  : 'rounded-md px-3 py-1.5 text-slate-500 hover:text-slate-700'
+              }
+            >
+              Create new product
+            </button>
           </div>
+        )}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Payment status">
-              <Select
-                name="paymentStatus"
-                value={status}
-                onChange={(e) =>
-                  setStatus(e.target.value as 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING')
-                }
-              >
-                <option value="UNPAID">Unpaid</option>
-                <option value="PAID">Paid (reimbursed)</option>
-                <option value="RECONCILIATION_PENDING">Payment reconciliation pending</option>
-              </Select>
-            </Field>
-            {status === 'PAID' && (
-              <Field label="Reimbursement date">
+        {mode === 'existing' || editing ? (
+          <form action={formAction} className="flex flex-col gap-4">
+            {editing && <input type="hidden" name="id" value={editing.id} />}
+            {state.error && (
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                {state.error}
+              </p>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Purchase date" required>
                 <Input
-                  name="reimbursementDate"
+                  name="date"
                   type="date"
-                  defaultValue={toDateInput(editing?.reimbursementDate)}
+                  defaultValue={toDateInput(editing?.date ?? new Date())}
+                  required
                 />
               </Field>
-            )}
-            <Field label="Bank transfer reference">
-              <Input name="bankReference" defaultValue={editing?.bankReference ?? ''} />
+              <Field label="Purchased by">
+                <Input name="purchasedBy" defaultValue={editing?.purchasedBy ?? 'Yahya'} />
+              </Field>
+              <Field label="Product" required>
+                <Select name="productId" defaultValue={editing?.productId ?? ''} required>
+                  <option value="">Select product…</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Store (optional)">
+                <Select name="storeId" defaultValue={editing?.storeId ?? ''}>
+                  <option value="">—</option>
+                  {stores.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Quantity" required>
+                <Input
+                  name="quantity"
+                  type="number"
+                  min="1"
+                  defaultValue={editing?.quantity ?? ''}
+                  required
+                />
+              </Field>
+              <Field label="Unit cost" required>
+                <Input
+                  name="unitCost"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  defaultValue={editing?.unitCost ?? ''}
+                  required
+                />
+              </Field>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Payment status">
+                <Select
+                  name="paymentStatus"
+                  value={status}
+                  onChange={(e) =>
+                    setStatus(e.target.value as 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING')
+                  }
+                >
+                  <option value="UNPAID">Unpaid</option>
+                  <option value="PAID">Paid (reimbursed)</option>
+                  <option value="RECONCILIATION_PENDING">Payment reconciliation pending</option>
+                </Select>
+              </Field>
+              {status === 'PAID' && (
+                <Field label="Reimbursement date">
+                  <Input
+                    name="reimbursementDate"
+                    type="date"
+                    defaultValue={toDateInput(editing?.reimbursementDate)}
+                  />
+                </Field>
+              )}
+              <Field label="Bank transfer reference">
+                <Input name="bankReference" defaultValue={editing?.bankReference ?? ''} />
+              </Field>
+            </div>
+
+            {/* Optional Daraz listing details — creates the store-scoped SKU
+                mapping in the same save, so nobody has to open Daraz Import. A
+                plain restock leaves these empty and behaves exactly as before. */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <div className="mb-1 flex items-center gap-1.5 text-sm font-medium text-slate-700">
+                <Tag className="h-4 w-4 text-brand-500" /> Daraz listing details (optional)
+              </div>
+              <p className="mb-3 text-xs text-slate-500">
+                Map this product&rsquo;s Daraz Seller SKU for a store now. Daraz Import will resolve it
+                automatically — no later mapping step. Leave empty for a normal restock.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Store">
+                  <Select name="mapStoreId" defaultValue="">
+                    <option value="">—</option>
+                    {stores.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Daraz Seller SKU">
+                  <Input name="mapSellerSku" placeholder="e.g. 812954-Black" />
+                </Field>
+              </div>
+            </div>
+
+            <FileUpload name="invoiceUrl" defaultUrl={editing?.invoiceUrl} label="Invoice / bill (image or PDF)" />
+
+            <Field label="Notes">
+              <Textarea name="notes" defaultValue={editing?.notes ?? ''} />
             </Field>
-          </div>
 
-          <FileUpload name="invoiceUrl" defaultUrl={editing?.invoiceUrl} label="Invoice / bill (image or PDF)" />
+            <div className="mt-2 flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <SubmitButton>{editing ? 'Save changes' : 'Record purchase'}</SubmitButton>
+            </div>
+          </form>
+        ) : (
+          <form action={newFormAction} className="flex flex-col gap-4">
+            {newState.error && (
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                {newState.error}
+              </p>
+            )}
+            <p className="rounded-lg bg-brand-50 px-3 py-2 text-xs text-brand-700">
+              Creates the product, records this purchase, adds stock, and maps the Daraz Seller SKU —
+              all in one atomic save.
+            </p>
 
-          <Field label="Notes">
-            <Textarea name="notes" defaultValue={editing?.notes ?? ''} />
-          </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="New product name" required>
+                <Input name="productName" placeholder="Product name" required />
+              </Field>
+              <Field label="Internal product code (optional)">
+                <Input name="productCode" placeholder="Auto-generated if blank" />
+              </Field>
+              <Field label="Purchase date" required>
+                <Input name="date" type="date" defaultValue={toDateInput(new Date())} required />
+              </Field>
+              <Field label="Purchased by">
+                <Input name="purchasedBy" defaultValue="Yahya" />
+              </Field>
+              <Field label="Quantity" required>
+                <Input name="quantity" type="number" min="1" required />
+              </Field>
+              <Field label="Unit purchase cost" required>
+                <Input name="unitCost" type="number" step="0.01" min="0" required />
+              </Field>
+            </div>
 
-          <div className="mt-2 flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <SubmitButton>{editing ? 'Save changes' : 'Record purchase'}</SubmitButton>
-          </div>
-        </form>
+            {/* Store + Seller SKU are required here — this flow exists to map a
+                new Daraz listing atomically with its first purchase. */}
+            <div className="rounded-xl border border-brand-100 bg-brand-50/40 p-4">
+              <div className="mb-3 flex items-center gap-1.5 text-sm font-medium text-slate-700">
+                <Tag className="h-4 w-4 text-brand-500" /> Daraz listing (required)
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Store" required>
+                  <Select name="mapStoreId" defaultValue="" required>
+                    <option value="">Select store…</option>
+                    {stores.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Daraz Seller SKU" required>
+                  <Input name="mapSellerSku" placeholder="e.g. 812954-Black" required />
+                </Field>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Payment status">
+                <Select
+                  name="paymentStatus"
+                  value={status}
+                  onChange={(e) =>
+                    setStatus(e.target.value as 'PAID' | 'UNPAID' | 'RECONCILIATION_PENDING')
+                  }
+                >
+                  <option value="UNPAID">Unpaid</option>
+                  <option value="PAID">Paid (reimbursed)</option>
+                  <option value="RECONCILIATION_PENDING">Payment reconciliation pending</option>
+                </Select>
+              </Field>
+              {status === 'PAID' && (
+                <Field label="Reimbursement date">
+                  <Input name="reimbursementDate" type="date" />
+                </Field>
+              )}
+              <Field label="Bank transfer reference">
+                <Input name="bankReference" />
+              </Field>
+            </div>
+
+            <FileUpload name="invoiceUrl" label="Invoice / bill (image or PDF)" />
+
+            <Field label="Notes">
+              <Textarea name="notes" />
+            </Field>
+
+            <div className="mt-2 flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <SubmitButton>Create product &amp; record purchase</SubmitButton>
+            </div>
+          </form>
+        )}
       </Modal>
     </>
   );

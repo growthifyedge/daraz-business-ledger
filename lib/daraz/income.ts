@@ -9,7 +9,7 @@
 // of its fee amounts, so the sum of all category buckets equals the sum of the
 // lines' Daraz-authoritative net. This helper asserts that equality.
 
-import { ALL_FEE_CATEGORIES, round2, type FeeCategory } from './fees';
+import { ALL_FEE_CATEGORIES, round2, normalizeSellerSku, type FeeCategory } from './fees';
 
 /** One income line as needed for the roll-up (a subset of DarazIncomeLine). */
 export interface IncomeLineForRollup {
@@ -240,7 +240,7 @@ export interface DarazCogsEstimate {
 }
 
 const mapKey = (storeId: string | null | undefined, sellerSku: string | null | undefined) =>
-  `${storeId ?? ''}||${(sellerSku ?? '').trim()}`;
+  `${storeId ?? ''}||${normalizeSellerSku(sellerSku)}`;
 
 function orderInScope(l: DeliveredOrderLine, f: IncomeRollupFilter): boolean {
   if (f.storeId && (l.storeId ?? null) !== f.storeId) return false;
