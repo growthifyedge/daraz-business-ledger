@@ -157,6 +157,33 @@ export function planIncomeLineWrites<T extends { orderItemId: string; statementN
   return { inserts, updates };
 }
 
+export type ImportAction = 'import' | 'reprocess' | 'noop';
+
+export interface ImportActionInput {
+  /** This exact store+file pair already has a committed batch (fingerprint match). */
+  alreadyCommitted: boolean;
+  orderLinesNew: number;
+  incomeLinesNew: number;
+  orderLinesUpdated: number;
+  incomeLinesUpdated: number;
+}
+
+/**
+ * Decide which action the import screen should offer for a dry-run:
+ *  • 'import'    — a fresh/normal commit (nothing was committed for this pair yet).
+ *  • 'reprocess' — the pair was already committed and there is NOTHING new, but
+ *                  existing order/statement lines legitimately changed under the
+ *                  current parser (update-in-place, no duplicates).
+ *  • 'noop'      — already committed and nothing changed (identical, already correct).
+ * Pure, so the button-enable rule is unit-testable and cannot drift from the UI.
+ */
+export function classifyImportAction(i: ImportActionInput): ImportAction {
+  if (!i.alreadyCommitted) return 'import';
+  const nothingNew = i.orderLinesNew === 0 && i.incomeLinesNew === 0;
+  const hasUpdates = i.orderLinesUpdated > 0 || i.incomeLinesUpdated > 0;
+  return nothingNew && hasUpdates ? 'reprocess' : 'noop';
+}
+
 export function computeDryRun(input: DryRunInput): DryRunResult {
   const orderById = new Map(input.orders.map((o) => [o.orderItemId, o]));
   // Store isolation: resolve SKUs ONLY against this store's mappings. The same

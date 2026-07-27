@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Database,
   ExternalLink,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/Button';
 import {
@@ -31,6 +32,7 @@ import { formatMoney, formatNumber } from '@/lib/utils';
 import { ALL_FEE_CATEGORIES, FEE_CATEGORY_LABEL } from '@/lib/daraz/fees';
 import {
   MAPPING_UNAVAILABLE as UNAVAILABLE,
+  classifyImportAction,
   type DryRunResult,
   type Unavailable,
 } from '@/lib/daraz/dryrun';
@@ -66,6 +68,16 @@ interface CommitSummary {
   reconDiff: number;
 }
 
+interface ReprocessSummary {
+  storeId: string;
+  incomeLinesUpdated: number;
+  feesReplaced: number;
+  orderLinesUpdated: number;
+  statementCount: number;
+  netPayout: number;
+  reconDiff: number;
+}
+
 interface StoreOpt {
   id: string;
   name: string;
@@ -87,8 +99,11 @@ export function ImportManager({
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ result: DryRunResult; meta: PreviewMeta } | null>(null);
   const [committed, setCommitted] = useState<CommitSummary | 'already' | null>(null);
+  const [reprocessed, setReprocessed] = useState<ReprocessSummary | 'nochange' | null>(null);
   const [pending, startTransition] = useTransition();
   const [committing, setCommitting] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
+  const [showReprocessModal, setShowReprocessModal] = useState(false);
   // In-session mapping state: per-SKU selected productId, saved productId, errors.
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [mapped, setMapped] = useState<Record<string, string>>({});
@@ -99,6 +114,20 @@ export function ImportManager({
 
   const r = preview?.result;
   const storeName = stores.find((s) => s.id === storeId)?.name ?? '';
+
+  // Reprocess is offered ONLY when this exact file pair was already imported (so
+  // the normal commit is a no-op), there is nothing NEW to insert, but existing
+  // order/statement lines legitimately changed under the current parser. When the
+  // files match and nothing changed, no reprocess button shows (true no-op).
+  const reprocessEligible =
+    !!r &&
+    classifyImportAction({
+      alreadyCommitted: !!preview?.meta.alreadyCommitted,
+      orderLinesNew: r.totals.orderLinesNew,
+      incomeLinesNew: r.totals.incomeLinesNew,
+      orderLinesUpdated: r.totals.orderLinesUpdated,
+      incomeLinesUpdated: r.totals.incomeLinesUpdated,
+    }) === 'reprocess';
 
   // Mappings are per store, so a store change invalidates this session's saved
   // state (a SKU saved for one store is not "mapped" for another).
@@ -160,6 +189,7 @@ export function ImportManager({
   function runPreview() {
     setError(null);
     setCommitted(null);
+    setReprocessed(null);
     const fd = buildForm();
     if (!fd) return;
     startTransition(async () => {
@@ -196,6 +226,29 @@ export function ImportManager({
         setError('Network error during import.');
       } finally {
         setCommitting(false);
+      }
+    })();
+  }
+
+  function runReprocess() {
+    setError(null);
+    setShowReprocessModal(false);
+    const fd = buildForm();
+    if (!fd) return;
+    setReprocessing(true);
+    (async () => {
+      try {
+        const res = await fetch('/api/daraz-import/reprocess', { method: 'POST', body: fd });
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          setError(json.error || 'Reprocess failed.');
+          return;
+        }
+        setReprocessed(json.noChanges ? 'nochange' : json.summary);
+      } catch {
+        setError('Network error during reprocess.');
+      } finally {
+        setReprocessing(false);
       }
     })();
   }
@@ -281,6 +334,44 @@ export function ImportManager({
           </div>
         </CardBody>
       </Card>
+
+      {reprocessed === 'nochange' && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>Already up to date — the imported income already matches this CSV. Nothing was changed.</span>
+        </div>
+      )}
+
+      {reprocessed && reprocessed !== 'nochange' && (
+        <Card className="mb-4 border-emerald-200">
+          <CardHeader
+            title="Imported income updated"
+            subtitle={`Store: ${storeName || '—'} · existing records updated in place — no new lines, no duplicates.`}
+          />
+          <CardBody>
+            <div className="mb-3 flex items-center gap-2 text-sm text-emerald-700">
+              <CheckCircle2 className="h-4 w-4" />
+              Updated existing statement lines and fees in <strong>{storeName || 'the selected store'}</strong>.
+              No stock, COGS, P&amp;L, Purchases, Yahya debts, Sales or SKU mappings were changed.
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Mini label="Store" value={storeName || '—'} />
+              <Mini label="Statements affected" value={formatNumber(reprocessed.statementCount)} />
+              <Mini label="Income lines updated" value={formatNumber(reprocessed.incomeLinesUpdated)} />
+              <Mini label="Fees replaced" value={formatNumber(reprocessed.feesReplaced)} />
+              <Mini label="Order lines updated" value={formatNumber(reprocessed.orderLinesUpdated)} />
+            </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Net payout now recorded: <strong>{formatMoney(reprocessed.netPayout)}</strong>. View per-store
+              detail on the{' '}
+              <Link href="/statements" className="text-brand-600 hover:text-brand-700">
+                Statements
+              </Link>{' '}
+              page.
+            </p>
+          </CardBody>
+        </Card>
+      )}
 
       {committed === 'already' && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -612,32 +703,70 @@ export function ImportManager({
             <StatCard label="Net payout (Daraz)" value={formatMoney(r.totals.darazNet)} />
           </div>
 
-          {/* --- import action --- */}
+          {/* --- import / reprocess action --- */}
           <Card>
             <CardBody className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-slate-600">
-                Imports into <strong>{storeName || 'the selected store'}</strong>:{' '}
-                <strong>{formatNumber(r.totals.orderLinesNew)}</strong> new order lines,{' '}
-                <strong>{formatNumber(r.totals.orderLinesUpdated)}</strong> updated,{' '}
-                <strong>{formatNumber(r.totals.incomeLines)}</strong> statement lines. Re-uploading
-                identical files is a safe no-op.
+                {reprocessEligible ? (
+                  <>
+                    These files were already imported. The dry-run finds{' '}
+                    <strong>{formatNumber(r.totals.incomeLinesUpdated)}</strong> statement line(s) and{' '}
+                    <strong>{formatNumber(r.totals.orderLinesUpdated)}</strong> order line(s) whose
+                    figures now differ. Reprocess updates those existing records in place for{' '}
+                    <strong>{storeName || 'the selected store'}</strong> — no new lines, no stock, COGS,
+                    P&amp;L or payouts.
+                  </>
+                ) : (
+                  <>
+                    Imports into <strong>{storeName || 'the selected store'}</strong>:{' '}
+                    <strong>{formatNumber(r.totals.orderLinesNew)}</strong> new order lines,{' '}
+                    <strong>{formatNumber(r.totals.orderLinesUpdated)}</strong> updated,{' '}
+                    <strong>{formatNumber(r.totals.incomeLines)}</strong> statement lines. Re-uploading
+                    identical files is a safe no-op.
+                  </>
+                )}
               </div>
-              <Button
-                onClick={runCommit}
-                disabled={
-                  committing ||
-                  !storeId ||
-                  r.totals.reconDiff !== 0 ||
-                  r.totals.unmatched > 0 ||
-                  preview?.meta.alreadyCommitted
-                }
-                title={!storeId ? 'Select a store first' : 'Import store-scoped orders + statements'}
-              >
-                <Database className="h-4 w-4" /> {committing ? 'Importing…' : 'Import orders + statements'}
-              </Button>
+              {reprocessEligible ? (
+                <Button
+                  onClick={() => setShowReprocessModal(true)}
+                  disabled={reprocessing || !storeId || r.totals.reconDiff !== 0 || r.totals.unmatched > 0}
+                  title="Update existing imported income + fees from this official CSV"
+                >
+                  <RefreshCw className="h-4 w-4" />{' '}
+                  {reprocessing ? 'Reprocessing…' : 'Reprocess / update imported income'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={runCommit}
+                  disabled={
+                    committing ||
+                    !storeId ||
+                    r.totals.reconDiff !== 0 ||
+                    r.totals.unmatched > 0 ||
+                    preview?.meta.alreadyCommitted
+                  }
+                  title={!storeId ? 'Select a store first' : 'Import store-scoped orders + statements'}
+                >
+                  <Database className="h-4 w-4" /> {committing ? 'Importing…' : 'Import orders + statements'}
+                </Button>
+              )}
             </CardBody>
           </Card>
         </>
+      )}
+
+      {showReprocessModal && r && (
+        <ReprocessModal
+          storeName={storeName}
+          incomeLines={r.totals.incomeLinesUpdated}
+          orderLines={r.totals.orderLinesUpdated}
+          statements={r.totals.statementCount}
+          netPayout={r.totals.darazNet}
+          incomeFileName={preview?.meta.incomeFileName ?? ''}
+          onConfirm={runReprocess}
+          onCancel={() => setShowReprocessModal(false)}
+          busy={reprocessing}
+        />
       )}
 
       {!r && (
@@ -652,6 +781,88 @@ export function ImportManager({
         <p className="mt-4 text-xs text-slate-400">A prior import exists. Re-uploading the same files will not duplicate.</p>
       )}
     </>
+  );
+}
+
+function ReprocessModal({
+  storeName,
+  incomeLines,
+  orderLines,
+  statements,
+  netPayout,
+  incomeFileName,
+  onConfirm,
+  onCancel,
+  busy,
+}: {
+  storeName: string;
+  incomeLines: number;
+  orderLines: number;
+  statements: number;
+  netPayout: number;
+  incomeFileName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reprocess-title"
+    >
+      <Card className="w-full max-w-lg">
+        <CardHeader
+          title={
+            <span id="reprocess-title" className="flex items-center gap-1.5">
+              <RefreshCw className="h-4 w-4 text-brand-600" /> Reprocess imported income
+            </span>
+          }
+          subtitle={`Store: ${storeName || '—'}`}
+        />
+        <CardBody className="space-y-3 text-sm text-slate-600">
+          <p>
+            This updates the <strong>existing imported income</strong> for this store using the
+            selected official CSV{incomeFileName ? <> (<span className="font-mono text-xs">{incomeFileName}</span>)</> : null},
+            recomputed with the current parser. It is for correcting statement figures that were
+            previously imported incorrectly.
+          </p>
+          <ul className="space-y-1.5 rounded-lg bg-slate-50 px-4 py-3">
+            <li className="flex items-center justify-between">
+              <span>Statement (income) lines updated in place</span>
+              <strong className="tabular-nums">{formatNumber(incomeLines)}</strong>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Order lines updated in place</span>
+              <strong className="tabular-nums">{formatNumber(orderLines)}</strong>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Statements affected</span>
+              <strong className="tabular-nums">{formatNumber(statements)}</strong>
+            </li>
+            <li className="flex items-center justify-between border-t border-slate-200 pt-1.5">
+              <span>Net payout after update</span>
+              <strong className="tabular-nums">{formatMoney(netPayout)}</strong>
+            </li>
+          </ul>
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+            Existing statement lines and their fees are replaced in place using the same
+            (Order Line ID + Statement) keys. <strong>No duplicate</strong> lines, orders, statements,
+            fees or payouts are created, and <strong>nothing</strong> is posted to stock, purchases,
+            COGS, manual sales, cashflow records or SKU mappings.
+          </p>
+        </CardBody>
+        <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3 sm:px-5">
+          <Button variant="outline" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={busy}>
+            <RefreshCw className="h-4 w-4" /> {busy ? 'Reprocessing…' : 'Update imported income'}
+          </Button>
+        </div>
+      </Card>
+    </div>
   );
 }
 
