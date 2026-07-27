@@ -142,34 +142,6 @@ export default async function DashboardPage() {
         />
       </div>
 
-      {/* Cash in hand banner */}
-      <Card className="mt-3 border-brand-100 bg-gradient-to-r from-brand-600 to-brand-700 text-white">
-        <CardBody className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-brand-100">
-              Net Cash Movement (All Stores)
-            </p>
-            <p className="mt-1 text-3xl font-bold tabular-nums">
-              {formatMoney(cash.netCashMovement)}
-            </p>
-          </div>
-          <div className="text-right text-xs text-brand-100">
-            <p>Investment + Daraz released</p>
-            <p>− reimbursements, expenses & payouts</p>
-            {cash.owedToYahya > 0 && (
-              <p className="mt-1 font-semibold text-amber-200">
-                {formatMoney(cash.owedToYahya)} owed to Yahya for stock
-              </p>
-            )}
-            {cash.reconciliationPending > 0 && (
-              <p className="mt-1 font-semibold text-sky-200">
-                {formatMoney(cash.reconciliationPending)} payment reconciliation pending
-              </p>
-            )}
-          </div>
-        </CardBody>
-      </Card>
-
       {/* Charts */}
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <Card className="lg:col-span-2">
