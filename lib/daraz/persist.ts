@@ -448,6 +448,224 @@ export async function commitImport(
   }
 }
 
+export interface ReprocessResult {
+  ok: boolean;
+  error?: string;
+  noChanges?: boolean;
+  summary?: {
+    storeId: string;
+    incomeLinesUpdated: number;
+    feesReplaced: number;
+    orderLinesUpdated: number;
+    statementCount: number;
+    netPayout: number;
+    reconDiff: number;
+  };
+}
+
+/**
+ * Reprocess an ALREADY-imported batch in place with the current parser, using the
+ * SAME official CSV. This exists for the case where prior income lines were
+ * written with stale/incorrect figures (e.g. a fee-amount column that once parsed
+ * as zero): the file fingerprint is unchanged, so a normal commit is a no-op, yet
+ * the recomputed statement lines legitimately differ.
+ *
+ * Strictly UPDATE-ONLY and store-scoped:
+ *  • updates existing DarazIncomeLine + replaces DarazIncomeFee rows in place,
+ *    keyed by (orderItemId, statementNumber), never inserting a new line;
+ *  • updates existing DarazOrderItem descriptive fields (idempotent, matched by
+ *    Order Line ID within the store), never inserting a new order line and never
+ *    touching its import-batch linkage;
+ *  • creates NO import batch, NO duplicate line/order/statement/fee;
+ *  • posts NO Sale / StockMovement / stock / COGS / P&L, and never touches
+ *    purchases, cashflow records or SKU mappings.
+ * Refuses if anything is genuinely NEW (that is an Import, not a reprocess), and
+ * is a clean no-op when there is nothing to update (identical, already-correct).
+ */
+export async function reprocessImport(
+  parsed: ParsedUpload,
+  user: SessionUser | null
+): Promise<ReprocessResult> {
+  if (!parsed.storeId) {
+    return { ok: false, error: 'Select a store before reprocessing.' };
+  }
+  const store = await prisma.store.findFirst({
+    where: { id: parsed.storeId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!store) {
+    return { ok: false, error: 'The selected store no longer exists.' };
+  }
+
+  const { result } = await buildPreview(parsed);
+  const t = result.totals;
+
+  // Same integrity guards as a commit — reprocess must never persist an unbalanced
+  // or unmatched set.
+  if (t.reconDiff !== 0 || t.categorySumCheck !== 0) {
+    return { ok: false, error: `Reconciliation difference detected (${t.reconDiff}); reprocess rolled back.` };
+  }
+  if (t.unmatched > 0) {
+    return { ok: false, error: `${t.unmatched} income Order Item ID(s) have no matching order; reprocess rolled back.` };
+  }
+  // Reprocess is UPDATE-ONLY. Anything new means this is a fresh import, not a
+  // reprocess — refuse rather than silently skip the new rows.
+  if (t.incomeLinesNew > 0 || t.orderLinesNew > 0) {
+    return { ok: false, error: 'New order/statement lines detected — use “Import orders + statements”, not Reprocess.' };
+  }
+  // Truly nothing to update → identical-file no-op (never an error).
+  if (t.incomeLinesUpdated === 0 && t.orderLinesUpdated === 0) {
+    return { ok: true, noChanges: true };
+  }
+
+  // Every parsed line already exists → all are updates.
+  const existingKeys = new Set(
+    (await prisma.darazIncomeLine.findMany({ select: { orderItemId: true, statementNumber: true } })).map(
+      (l) => dupKey(l.orderItemId, l.statementNumber)
+    )
+  );
+  const { updates: revisedIncome } = planIncomeLineWrites(existingKeys, parsed.incomeLines);
+
+  // Order productId is re-derived from THIS store's EXISTING mappings only — no
+  // mapping is created or changed.
+  const skuToProduct = new Map(
+    (
+      await prisma.darazSkuMapping.findMany({
+        where: { storeId: parsed.storeId },
+        select: { sellerSku: true, productId: true },
+      })
+    ).map((m) => [m.sellerSku, m.productId])
+  );
+  const seenLine = new Set<string>();
+  const orderRows = parsed.orders
+    .filter((o) => (seenLine.has(o.orderItemId) ? false : (seenLine.add(o.orderItemId), true)))
+    .map((o) => ({
+      orderItemId: o.orderItemId,
+      orderNumber: o.orderNumber,
+      sellerSku: o.sellerSku || null,
+      itemName: o.productName || null,
+      quantity: o.quantity,
+      status: o.status || null,
+      createTime: parseDarazDate(o.orderDate),
+      productId: o.sellerSku ? (skuToProduct.get(o.sellerSku) ?? null) : null,
+    }));
+
+  try {
+    const outcome = await prisma.$transaction(
+      async (tx) => {
+        let incomeLinesUpdated = 0;
+        let feesReplaced = 0;
+        let netPayout = 0;
+        const stmts = new Set<string>();
+
+        // Income lines: update figures + REPLACE fees in place, store-scoped by
+        // (orderItemId, statementNumber, storeId). A line owned by another store
+        // is never touched.
+        for (const il of revisedIncome) {
+          const line = await tx.darazIncomeLine.findFirst({
+            where: {
+              orderItemId: il.orderItemId,
+              statementNumber: il.statementNumber,
+              storeId: parsed.storeId,
+            },
+            select: { id: true },
+          });
+          if (!line) continue; // belongs to a different store — skip (isolation)
+          await tx.darazIncomeLine.update({
+            where: { id: line.id },
+            data: {
+              orderNumber: il.orderNumber || null,
+              sellerSku: il.sellerSku || null,
+              productName: il.productName || null,
+              statementPeriod: il.statementPeriod || null,
+              transactionDate: parseDarazDate(il.transactionDates[0]),
+              orderCreationDate: parseDarazDate(il.orderCreationDate),
+              orderStatus: il.orderStatus || null,
+              releaseStatus: il.releaseStatus || null,
+              productPriceRevenue: il.productPriceRevenue,
+              buyerShippingCredit: il.buyerShippingCredit,
+              totalCredits: il.totalCredits,
+              totalDeductions: il.totalDeductions,
+              netAmount: il.netAmount,
+              reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
+            },
+          });
+          await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: line.id } });
+          if (il.fees.length) {
+            await tx.darazIncomeFee.createMany({
+              data: il.fees.map((f) => ({
+                incomeLineId: line.id,
+                label: f.label,
+                category: f.category,
+                amount: f.amount,
+                vatAmount: f.vatAmount,
+                isRefund: f.isRefund,
+                isReversal: f.isReversal,
+              })),
+            });
+            feesReplaced += il.fees.length;
+          }
+          incomeLinesUpdated++;
+          netPayout = round2(netPayout + il.netAmount);
+          stmts.add(il.statementNumber);
+        }
+
+        // Order lines: update descriptive fields ONLY, store-scoped, matched by
+        // Order Line ID. updateMany never inserts, so no order can be duplicated,
+        // and importBatchId / storeId linkage is preserved (not in the SET).
+        let orderLinesUpdated = 0;
+        for (const o of orderRows) {
+          const res = await tx.darazOrderItem.updateMany({
+            where: { orderItemId: o.orderItemId, storeId: parsed.storeId },
+            data: {
+              orderNumber: o.orderNumber,
+              sellerSku: o.sellerSku,
+              itemName: o.itemName,
+              quantity: o.quantity,
+              status: o.status,
+              createTime: o.createTime,
+              productId: o.productId,
+            },
+          });
+          orderLinesUpdated += res.count;
+        }
+
+        return {
+          incomeLinesUpdated,
+          feesReplaced,
+          orderLinesUpdated,
+          statementCount: stmts.size,
+          netPayout,
+        };
+      },
+      { timeout: 120_000, maxWait: 20_000 }
+    );
+
+    const summary = {
+      storeId: parsed.storeId,
+      incomeLinesUpdated: outcome.incomeLinesUpdated,
+      feesReplaced: outcome.feesReplaced,
+      orderLinesUpdated: outcome.orderLinesUpdated,
+      statementCount: outcome.statementCount,
+      netPayout: outcome.netPayout,
+      reconDiff: t.reconDiff,
+    };
+
+    await logAudit({
+      user,
+      action: 'UPDATE',
+      module: 'DarazImport',
+      recordId: `reprocess:${parsed.storeId}:${parsed.fingerprint}`,
+      newValue: summary,
+    });
+
+    return { ok: true, summary };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Reprocess failed and was rolled back.';
+    return { ok: false, error: msg };
+  }
+}
+
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
