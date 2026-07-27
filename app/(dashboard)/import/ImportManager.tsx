@@ -36,7 +36,26 @@ import {
   type DryRunResult,
   type Unavailable,
 } from '@/lib/daraz/dryrun';
+import { apiFailureMessage, networkErrorMessage } from '@/lib/api-error';
 import { saveDarazSkuMapping } from './actions';
+
+/**
+ * Read an API response WITHOUT assuming it is JSON. A serverless timeout or
+ * body-limit rejection returns a non-JSON platform page; parsing it as JSON threw
+ * and made every failure look like a "network error". This returns the parsed
+ * body when possible and always the raw text so the caller can surface the real
+ * status + reason.
+ */
+async function readApiResponse(res: Response): Promise<{ ok: boolean; json: { ok?: boolean; error?: string; [k: string]: unknown } | null; text: string }> {
+  const text = await res.text();
+  let json: { ok?: boolean; error?: string } | null = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  return { ok: res.ok, json, text };
+}
 
 interface ProductOpt {
   id: string;
@@ -195,15 +214,15 @@ export function ImportManager({
     startTransition(async () => {
       try {
         const res = await fetch('/api/daraz-import/preview', { method: 'POST', body: fd });
-        const json = await res.json();
-        if (!res.ok || !json.ok) {
+        const { ok, json, text } = await readApiResponse(res);
+        if (!ok || !json?.ok) {
           setPreview(null);
-          setError(json.error || 'Preview failed.');
+          setError(apiFailureMessage('Preview', res.status, res.statusText, text));
           return;
         }
-        setPreview({ result: json.result, meta: json.meta });
-      } catch {
-        setError('Network error while previewing.');
+        setPreview({ result: json.result as DryRunResult, meta: json.meta as PreviewMeta });
+      } catch (e) {
+        setError(networkErrorMessage('Preview', e));
       }
     });
   }
@@ -216,14 +235,14 @@ export function ImportManager({
     (async () => {
       try {
         const res = await fetch('/api/daraz-import/commit', { method: 'POST', body: fd });
-        const json = await res.json();
-        if (!res.ok || !json.ok) {
-          setError(json.error || 'Import failed.');
+        const { ok, json, text } = await readApiResponse(res);
+        if (!ok || !json?.ok) {
+          setError(apiFailureMessage('Import', res.status, res.statusText, text));
           return;
         }
-        setCommitted(json.alreadyImported ? 'already' : json.summary);
-      } catch {
-        setError('Network error during import.');
+        setCommitted(json.alreadyImported ? 'already' : (json.summary as CommitSummary));
+      } catch (e) {
+        setError(networkErrorMessage('Import', e));
       } finally {
         setCommitting(false);
       }
@@ -239,14 +258,14 @@ export function ImportManager({
     (async () => {
       try {
         const res = await fetch('/api/daraz-import/reprocess', { method: 'POST', body: fd });
-        const json = await res.json();
-        if (!res.ok || !json.ok) {
-          setError(json.error || 'Reprocess failed.');
+        const { ok, json, text } = await readApiResponse(res);
+        if (!ok || !json?.ok) {
+          setError(apiFailureMessage('Reprocess', res.status, res.statusText, text));
           return;
         }
-        setReprocessed(json.noChanges ? 'nochange' : json.summary);
-      } catch {
-        setError('Network error during reprocess.');
+        setReprocessed(json.noChanges ? 'nochange' : (json.summary as ReprocessSummary));
+      } catch (e) {
+        setError(networkErrorMessage('Reprocess', e));
       } finally {
         setReprocessing(false);
       }
