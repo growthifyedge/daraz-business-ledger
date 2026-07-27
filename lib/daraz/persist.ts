@@ -534,62 +534,102 @@ export async function reprocessImport(
   try {
     const outcome = await prisma.$transaction(
       async (tx) => {
+        // Load THIS store's existing lines once (id keyed by composite identity)
+        // instead of a per-line findFirst. A line owned by another store is simply
+        // absent from this map, so it is never touched (store isolation preserved).
+        const storeLines = await tx.darazIncomeLine.findMany({
+          where: { storeId: parsed.storeId },
+          select: { id: true, orderItemId: true, statementNumber: true },
+        });
+        const idByKey = new Map(
+          storeLines.map((l) => [dupKey(l.orderItemId, l.statementNumber), l.id])
+        );
+
+        // Resolve the lines this reprocess will actually rewrite (those that exist
+        // for this store), each paired with its persisted id and the SINGLE-source
+        // write payload (incomeLineWriteData) — so netAmount/fees can never drift to
+        // a stale zero on the update path (the original persistence bug).
+        const targets = revisedIncome
+          .map((il) => ({ il, id: idByKey.get(dupKey(il.orderItemId, il.statementNumber)) }))
+          .filter((t): t is { il: IncomeLine; id: string } => !!t.id);
+
         let incomeLinesUpdated = 0;
         let feesReplaced = 0;
         const stmts = new Set<string>();
-        // Ids of the lines this reprocess actually rewrote, and the authoritative
-        // source net for exactly those lines — the two must agree after the write.
         const updatedIds: string[] = [];
         const expectedLines: IncomeLine[] = [];
 
-        // Income lines: update figures + REPLACE fees in place, store-scoped by
-        // (orderItemId, statementNumber, storeId). A line owned by another store
-        // is never touched. Field payload comes from incomeLineWriteData — the
-        // SAME source of truth an insert uses — so netAmount/fees can never drift
-        // to a stale zero on the update path (the bug this reprocess must fix).
-        for (const il of revisedIncome) {
-          const line = await tx.darazIncomeLine.findFirst({
-            where: {
-              orderItemId: il.orderItemId,
-              statementNumber: il.statementNumber,
-              storeId: parsed.storeId,
-            },
-            select: { id: true },
+        // Income lines: ONE bulk UPDATE … FROM (VALUES …) for all figures, rather
+        // than N sequential per-line updates. This is what keeps the whole
+        // reprocess inside the serverless function's time budget — the per-line
+        // loop blew the deployed 60s limit (a platform 504, surfaced to the client
+        // as a false "Network error"). Store-scoped in the WHERE for isolation.
+        if (targets.length) {
+          const lineValues = targets.map((t) => {
+            const d = incomeLineWriteData(t.il);
+            return Prisma.sql`(${t.id}, ${d.orderNumber}, ${d.sellerSku}, ${d.productName}, ${d.statementPeriod}, ${d.transactionDate}, ${d.orderCreationDate}, ${d.orderStatus}, ${d.releaseStatus}, ${d.productPriceRevenue}, ${d.buyerShippingCredit}, ${d.totalCredits}, ${d.totalDeductions}, ${d.netAmount}, ${d.reconciled})`;
           });
-          if (!line) continue; // belongs to a different store — skip (isolation)
-          await tx.darazIncomeLine.update({
-            where: { id: line.id },
-            data: incomeLineWriteData(il),
-          });
-          await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: line.id } });
-          if (il.fees.length) {
-            await tx.darazIncomeFee.createMany({ data: incomeFeeCreateRows(line.id, il) });
-            feesReplaced += il.fees.length;
+          incomeLinesUpdated = await tx.$executeRaw`
+            UPDATE "DarazIncomeLine" AS t SET
+              "orderNumber"         = v."orderNumber",
+              "sellerSku"           = v."sellerSku",
+              "productName"         = v."productName",
+              "statementPeriod"     = v."statementPeriod",
+              "transactionDate"     = v."transactionDate"::timestamp,
+              "orderCreationDate"   = v."orderCreationDate"::timestamp,
+              "orderStatus"         = v."orderStatus",
+              "releaseStatus"       = v."releaseStatus",
+              "productPriceRevenue" = v."productPriceRevenue"::double precision,
+              "buyerShippingCredit" = v."buyerShippingCredit"::double precision,
+              "totalCredits"        = v."totalCredits"::double precision,
+              "totalDeductions"     = v."totalDeductions"::double precision,
+              "netAmount"           = v."netAmount"::double precision,
+              "reconciled"          = v."reconciled"::boolean
+            FROM (VALUES ${Prisma.join(lineValues)}) AS v(
+              "id","orderNumber","sellerSku","productName","statementPeriod",
+              "transactionDate","orderCreationDate","orderStatus","releaseStatus",
+              "productPriceRevenue","buyerShippingCredit","totalCredits","totalDeductions","netAmount","reconciled"
+            )
+            WHERE t."id" = v."id" AND t."storeId" = ${parsed.storeId}`;
+
+          // Fees: REPLACE atomically for all rewritten lines — one bulk delete +
+          // one bulk insert, not a delete/insert per line.
+          for (const t of targets) {
+            updatedIds.push(t.id);
+            expectedLines.push(t.il);
+            stmts.add(t.il.statementNumber);
           }
-          updatedIds.push(line.id);
-          expectedLines.push(il);
-          incomeLinesUpdated++;
-          stmts.add(il.statementNumber);
+          await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: { in: updatedIds } } });
+          const feeRows = targets.flatMap((t) => incomeFeeCreateRows(t.id, t.il));
+          if (feeRows.length) {
+            await tx.darazIncomeFee.createMany({ data: feeRows });
+            feesReplaced = feeRows.length;
+          }
         }
 
-        // Order lines: update descriptive fields ONLY, store-scoped, matched by
-        // Order Line ID. updateMany never inserts, so no order can be duplicated,
-        // and importBatchId / storeId linkage is preserved (not in the SET).
+        // Order lines: ONE bulk UPDATE of descriptive fields, store-scoped, matched
+        // by Order Line ID. FROM (VALUES …) updates only rows that already exist, so
+        // nothing is inserted or duplicated, and importBatchId / storeId linkage is
+        // preserved (not in the SET).
         let orderLinesUpdated = 0;
-        for (const o of orderRows) {
-          const res = await tx.darazOrderItem.updateMany({
-            where: { orderItemId: o.orderItemId, storeId: parsed.storeId },
-            data: {
-              orderNumber: o.orderNumber,
-              sellerSku: o.sellerSku,
-              itemName: o.itemName,
-              quantity: o.quantity,
-              status: o.status,
-              createTime: o.createTime,
-              productId: o.productId,
-            },
-          });
-          orderLinesUpdated += res.count;
+        if (orderRows.length) {
+          const orderValues = orderRows.map(
+            (o) =>
+              Prisma.sql`(${o.orderItemId}, ${o.orderNumber}, ${o.sellerSku}, ${o.itemName}, ${o.quantity}, ${o.status}, ${o.createTime}, ${o.productId})`
+          );
+          orderLinesUpdated = await tx.$executeRaw`
+            UPDATE "DarazOrderItem" AS t SET
+              "orderNumber" = v."orderNumber",
+              "sellerSku"   = v."sellerSku",
+              "itemName"    = v."itemName",
+              "quantity"    = v."quantity"::int,
+              "status"      = v."status",
+              "createTime"  = v."createTime"::timestamp,
+              "productId"   = v."productId"
+            FROM (VALUES ${Prisma.join(orderValues)}) AS v(
+              "orderItemId","orderNumber","sellerSku","itemName","quantity","status","createTime","productId"
+            )
+            WHERE t."orderItemId" = v."orderItemId" AND t."storeId" = ${parsed.storeId}`;
         }
 
         // Post-write reconciliation (inside the tx, so a mismatch ROLLS BACK):
@@ -624,7 +664,9 @@ export async function reprocessImport(
           netPayout: persistedNet,
         };
       },
-      { timeout: 120_000, maxWait: 20_000 }
+      // Tx timeout kept comfortably UNDER the route's maxDuration (60s) so a slow
+      // run aborts and rolls back with a clean JSON error, never a platform 504.
+      { timeout: 50_000, maxWait: 10_000 }
     );
 
     const summary = {
