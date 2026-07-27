@@ -5,6 +5,7 @@
 import { getSession, type SessionUser } from '@/lib/auth';
 import { validateUpload, UploadError, LIMITS } from '@/lib/daraz/xlsx';
 import { parseUpload, type ParsedUpload } from '@/lib/daraz/persist';
+import { IncomeParseError } from '@/lib/daraz/parse';
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -54,7 +55,7 @@ export async function readUpload(req: Request): Promise<ParsedUpload> {
   try {
     return await parseUpload(orderBufs, incomeText, incomeFile.name, storeId);
   } catch (e) {
-    if (e instanceof UploadError) throw new HttpError(422, e.message);
+    if (e instanceof UploadError || e instanceof IncomeParseError) throw new HttpError(422, e.message);
     throw new HttpError(422, 'Could not parse the uploaded files. Check they are the official Daraz exports.');
   }
 }

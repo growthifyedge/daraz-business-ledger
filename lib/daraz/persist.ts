@@ -20,6 +20,13 @@ import {
 import { computeDryRun, dupKey, planIncomeLineWrites, type DryRunResult, type LedgerProduct } from './dryrun';
 import { sha256Hex, batchFingerprint } from './fingerprint';
 import { readOrdersWorkbook, UploadError } from './xlsx';
+import {
+  incomeLineWriteData,
+  incomeFeeCreateRows,
+  parseIncomeBannerTotal,
+  sumNet,
+  reconciles,
+} from './reconcile';
 
 export interface OrdersFile {
   buf: Buffer;
@@ -41,6 +48,10 @@ export interface ParsedUpload {
   incomeFeeRowCount: number;
   ordersFileName: string; // joined names of all Orders files
   incomeFileName: string;
+  /** Authoritative "PKR …" total from the CSV banner, if present (no PII). Used
+   *  as a parse-independent reconciliation check so an all-zero parse cannot be
+   *  persisted as a silent success. */
+  incomeBannerTotal: number | null;
 }
 
 /**
@@ -90,6 +101,7 @@ export async function parseUpload(
     incomeFeeRowCount: incomeFeeRows.length,
     ordersFileName: orderFiles.map((f) => f.name).join(', '),
     incomeFileName,
+    incomeBannerTotal: parseIncomeBannerTotal(incomeText),
   };
 }
 
@@ -256,34 +268,15 @@ export async function commitImport(
     id: randomUUID(),
     orderItemId: il.orderItemId,
     statementNumber: il.statementNumber,
-    orderNumber: il.orderNumber || null,
-    sellerSku: il.sellerSku || null,
-    productName: il.productName || null,
-    statementPeriod: il.statementPeriod || null,
-    transactionDate: parseDarazDate(il.transactionDates[0]),
-    orderCreationDate: parseDarazDate(il.orderCreationDate),
-    orderStatus: il.orderStatus || null,
-    releaseStatus: il.releaseStatus || null,
-    productPriceRevenue: il.productPriceRevenue,
-    buyerShippingCredit: il.buyerShippingCredit,
-    totalCredits: il.totalCredits,
-    totalDeductions: il.totalDeductions,
-    netAmount: il.netAmount,
-    reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
+    ...incomeLineWriteData(il),
     storeId: parsed.storeId,
     importBatchId: batchId,
   }));
-  const feeRows = newIncome.flatMap((il, i) =>
-    il.fees.map((f) => ({
-      incomeLineId: incomeLineRows[i].id,
-      label: f.label,
-      category: f.category,
-      amount: f.amount,
-      vatAmount: f.vatAmount,
-      isRefund: f.isRefund,
-      isReversal: f.isReversal,
-    }))
-  );
+  const feeRows = newIncome.flatMap((il, i) => incomeFeeCreateRows(incomeLineRows[i].id, il));
+  // Authoritative source total for reconciliation: every line this commit writes
+  // (newly inserted + revised-in-place), NOT just the new batch's own lines. This
+  // closes the gap that let a revised line be silently overwritten to zero.
+  const expectedTouchedNet = round2(expectedNet + sumNet(revisedIncome));
 
   try {
     const outcome = await prisma.$transaction(
@@ -360,53 +353,41 @@ export async function commitImport(
         if (feeRows.length) await tx.darazIncomeFee.createMany({ data: feeRows });
 
         // Revised statement lines: update figures in place and REPLACE their fee
-        // rows atomically (delete old, insert new) — never silently ignored.
+        // rows atomically (delete old, insert new) — never silently ignored. Their
+        // ids are tracked so the post-write reconciliation covers them too.
+        const revisedIds: string[] = [];
         for (const il of revisedIncome) {
           const line = await tx.darazIncomeLine.update({
             where: { orderItemId_statementNumber: { orderItemId: il.orderItemId, statementNumber: il.statementNumber } },
-            data: {
-              orderNumber: il.orderNumber || null,
-              sellerSku: il.sellerSku || null,
-              productName: il.productName || null,
-              statementPeriod: il.statementPeriod || null,
-              transactionDate: parseDarazDate(il.transactionDates[0]),
-              orderCreationDate: parseDarazDate(il.orderCreationDate),
-              orderStatus: il.orderStatus || null,
-              releaseStatus: il.releaseStatus || null,
-              productPriceRevenue: il.productPriceRevenue,
-              buyerShippingCredit: il.buyerShippingCredit,
-              totalCredits: il.totalCredits,
-              totalDeductions: il.totalDeductions,
-              netAmount: il.netAmount,
-              reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
-            },
+            data: incomeLineWriteData(il),
             select: { id: true },
           });
+          revisedIds.push(line.id);
           await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: line.id } });
           if (il.fees.length) {
-            await tx.darazIncomeFee.createMany({
-              data: il.fees.map((f) => ({
-                incomeLineId: line.id,
-                label: f.label,
-                category: f.category,
-                amount: f.amount,
-                vatAmount: f.vatAmount,
-                isRefund: f.isRefund,
-                isReversal: f.isReversal,
-              })),
-            });
+            await tx.darazIncomeFee.createMany({ data: incomeFeeCreateRows(line.id, il) });
           }
         }
 
-        // Post-write reconciliation: net of income lines written for THIS batch
-        // must equal the net of the newly inserted lines exactly.
+        // Post-write reconciliation: the net actually persisted for EVERY line this
+        // commit touched (new batch lines + revised-in-place lines) must equal the
+        // authoritative source total. Catches a dropped/zeroed write — including a
+        // revised line silently overwritten to zero — and rolls back loudly.
+        const ids = [...incomeLineRows.map((r) => r.id), ...revisedIds];
         const agg = await tx.darazIncomeLine.aggregate({
-          where: { importBatchId: batchId },
+          where: { id: { in: ids } },
           _sum: { netAmount: true },
         });
         const persistedNet = round2(agg._sum.netAmount ?? 0);
-        if (persistedNet !== expectedNet) {
-          throw new Error(`Persisted net ${persistedNet} != expected ${expectedNet} — rolling back.`);
+        if (!reconciles(persistedNet, expectedTouchedNet)) {
+          throw new Error(`Persisted net ${persistedNet} != expected ${expectedTouchedNet} — rolling back.`);
+        }
+        // Parse-independent guard: if the CSV banner declares a non-zero total, a
+        // wholesale zero persist is a corruption, never a success.
+        if (parsed.incomeBannerTotal && parsed.incomeBannerTotal > 0 && persistedNet === 0) {
+          throw new Error(
+            `CSV banner total is PKR ${parsed.incomeBannerTotal} but persisted net is 0 — rolling back.`
+          );
         }
         return { batchId, created: true, updated, incomeUpdated: revisedIncome.length };
       },
@@ -555,12 +536,17 @@ export async function reprocessImport(
       async (tx) => {
         let incomeLinesUpdated = 0;
         let feesReplaced = 0;
-        let netPayout = 0;
         const stmts = new Set<string>();
+        // Ids of the lines this reprocess actually rewrote, and the authoritative
+        // source net for exactly those lines — the two must agree after the write.
+        const updatedIds: string[] = [];
+        const expectedLines: IncomeLine[] = [];
 
         // Income lines: update figures + REPLACE fees in place, store-scoped by
         // (orderItemId, statementNumber, storeId). A line owned by another store
-        // is never touched.
+        // is never touched. Field payload comes from incomeLineWriteData — the
+        // SAME source of truth an insert uses — so netAmount/fees can never drift
+        // to a stale zero on the update path (the bug this reprocess must fix).
         for (const il of revisedIncome) {
           const line = await tx.darazIncomeLine.findFirst({
             where: {
@@ -573,40 +559,16 @@ export async function reprocessImport(
           if (!line) continue; // belongs to a different store — skip (isolation)
           await tx.darazIncomeLine.update({
             where: { id: line.id },
-            data: {
-              orderNumber: il.orderNumber || null,
-              sellerSku: il.sellerSku || null,
-              productName: il.productName || null,
-              statementPeriod: il.statementPeriod || null,
-              transactionDate: parseDarazDate(il.transactionDates[0]),
-              orderCreationDate: parseDarazDate(il.orderCreationDate),
-              orderStatus: il.orderStatus || null,
-              releaseStatus: il.releaseStatus || null,
-              productPriceRevenue: il.productPriceRevenue,
-              buyerShippingCredit: il.buyerShippingCredit,
-              totalCredits: il.totalCredits,
-              totalDeductions: il.totalDeductions,
-              netAmount: il.netAmount,
-              reconciled: round2(il.totalCredits + il.totalDeductions) === il.netAmount,
-            },
+            data: incomeLineWriteData(il),
           });
           await tx.darazIncomeFee.deleteMany({ where: { incomeLineId: line.id } });
           if (il.fees.length) {
-            await tx.darazIncomeFee.createMany({
-              data: il.fees.map((f) => ({
-                incomeLineId: line.id,
-                label: f.label,
-                category: f.category,
-                amount: f.amount,
-                vatAmount: f.vatAmount,
-                isRefund: f.isRefund,
-                isReversal: f.isReversal,
-              })),
-            });
+            await tx.darazIncomeFee.createMany({ data: incomeFeeCreateRows(line.id, il) });
             feesReplaced += il.fees.length;
           }
+          updatedIds.push(line.id);
+          expectedLines.push(il);
           incomeLinesUpdated++;
-          netPayout = round2(netPayout + il.netAmount);
           stmts.add(il.statementNumber);
         }
 
@@ -630,12 +592,36 @@ export async function reprocessImport(
           orderLinesUpdated += res.count;
         }
 
+        // Post-write reconciliation (inside the tx, so a mismatch ROLLS BACK):
+        // read the net actually persisted for exactly the lines we rewrote and
+        // require it to equal the authoritative parsed source total. This is the
+        // guard the original reprocess lacked — it reported success while the
+        // rows stayed at zero.
+        const expectedNet = sumNet(expectedLines);
+        const agg = await tx.darazIncomeLine.aggregate({
+          where: { id: { in: updatedIds } },
+          _sum: { netAmount: true },
+        });
+        const persistedNet = round2(agg._sum.netAmount ?? 0);
+        if (!reconciles(persistedNet, expectedNet)) {
+          throw new Error(
+            `Reprocess persisted net ${persistedNet} != expected ${expectedNet} — rolling back.`
+          );
+        }
+        // Parse-independent guard: a non-zero CSV banner total can never reconcile
+        // to a wholesale zero persist — that is the exact corruption to refuse.
+        if (parsed.incomeBannerTotal && parsed.incomeBannerTotal > 0 && persistedNet === 0) {
+          throw new Error(
+            `CSV banner total is PKR ${parsed.incomeBannerTotal} but reprocess persisted net is 0 — rolling back.`
+          );
+        }
+
         return {
           incomeLinesUpdated,
           feesReplaced,
           orderLinesUpdated,
           statementCount: stmts.size,
-          netPayout,
+          netPayout: persistedNet,
         };
       },
       { timeout: 120_000, maxWait: 20_000 }
