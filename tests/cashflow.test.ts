@@ -117,6 +117,24 @@ test('6) Store-scoped costs exclude other-store AND unassigned/global costs', ()
   assert.equal(sumStoreScopedCosts(rows, 'ge'), 200);
 });
 
+test('8) Share payable is an obligation and can never be negative', () => {
+  // buildCashFlow surfaces the caller-clamped values; this documents the invariant
+  // that the Cash Flow UI must never render a negative payable.
+  const cf = buildCashFlow(figures({ yahyaShareUnpaid: 0, ownerShareUnpaid: 0 }));
+  assert.equal(cf.yahyaShareUnpaid, 0);
+  assert.equal(cf.ownerShareUnpaid, 0);
+
+  // Mirror the getCashFlow clamp: when net profit is zero/negative the earned
+  // share is floored at 0 (nothing owed), and paid never drives it below 0.
+  const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const shareUnpaid = (earnedShare: number, paid: number) =>
+    round2(Math.max(0, Math.max(0, earnedShare) - paid));
+  assert.equal(shareUnpaid(-6850, 0), 0); // negative net profit → 0, not -6850
+  assert.equal(shareUnpaid(-6850, 0) + shareUnpaid(-6850, 0), 0); // never the -13,700 bug
+  assert.equal(shareUnpaid(500, 800), 0); // overpaid → 0, not negative
+  assert.equal(shareUnpaid(500, 200), 300); // normal case unchanged
+});
+
 test('7) All Stores includes every applicable figure', () => {
   const rows = [
     { storeId: 'ashu', amount: 100 },

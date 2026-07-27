@@ -571,8 +571,16 @@ export async function getCashFlow(f: Filter = {}): Promise<CashFlow> {
   const profitPayoutsPaid = payoutByParty.reduce((s, p) => s + (p._sum.amount ?? 0), 0);
   // Profit payouts carry no store; in a single-store view we cannot attribute
   // them, so accrued-share-unpaid subtracts them only in All Stores.
-  const yahyaShareUnpaid = round2(fin.yahyaShare - (isStoreFiltered ? 0 : paidByParty('YAHYA')));
-  const ownerShareUnpaid = round2(fin.ownerShare - (isStoreFiltered ? 0 : paidByParty('OWNER')));
+  // A share PAYABLE is an obligation and can never be negative: when net profit
+  // is zero or negative the earned share is floored at 0 (nothing is owed), and
+  // once paid meets/exceeds the earned share the remaining payable is 0 too.
+  // Recorded payouts themselves are never altered by this clamp.
+  const yahyaShareUnpaid = round2(
+    Math.max(0, Math.max(0, fin.yahyaShare) - (isStoreFiltered ? 0 : paidByParty('YAHYA')))
+  );
+  const ownerShareUnpaid = round2(
+    Math.max(0, Math.max(0, fin.ownerShare) - (isStoreFiltered ? 0 : paidByParty('OWNER')))
+  );
 
   return buildCashFlow({
     investment: inv._sum.amount ?? 0, // global
