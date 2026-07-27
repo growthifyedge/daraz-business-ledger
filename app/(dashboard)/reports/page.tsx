@@ -4,7 +4,6 @@ import {
   ShoppingBag,
   ShoppingCart,
   Receipt,
-  Wallet,
   Boxes,
   PackagePlus,
   ArrowUpRight,
@@ -38,12 +37,6 @@ const REPORTS = [
     title: 'Expenses',
     description: 'Operating costs by category, store and payment method.',
     icon: Receipt,
-  },
-  {
-    href: '/reports/cash-flow',
-    title: 'Cash Flow',
-    description: 'Money in and out with the running cash balance.',
-    icon: Wallet,
   },
   {
     href: '/reports/inventory',

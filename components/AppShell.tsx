@@ -41,7 +41,6 @@ const NAV = [
   { href: '/payouts', label: 'Daraz Payouts', icon: Banknote },
   { href: '/statements', label: 'Daraz Statements', icon: FileText },
   { href: '/profit-loss', label: 'Profit & Loss', icon: PieChart },
-  { href: '/cash-flow', label: 'Cash Flow', icon: Wallet },
   { href: '/reports', label: 'Reports', icon: FileBarChart },
 ] as const;
 
