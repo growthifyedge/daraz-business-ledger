@@ -9,7 +9,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { summariseDarazIncome, type DashboardIncomeLine } from '../lib/dashboard';
+import {
+  summariseDarazIncome,
+  summariseInventory,
+  storeHref,
+  isStoreSwitchBlocked,
+  type DashboardIncomeLine,
+  type InventoryProductRow,
+} from '../lib/dashboard';
 
 // Two stores, mixed release statuses. Every line is Released or Ready to Release.
 const ASHU = 'store_ashu';
@@ -56,6 +63,74 @@ test('Released + Ready equals the imported Daraz Net (reconciles)', () => {
 test('no store filter defaults to All Stores (every line counted)', () => {
   const all = summariseDarazIncome(lines);
   assert.equal(all.net, 52927.65);
+});
+
+// --- Store filter helpers -------------------------------------------------
+
+test('storeHref maps a store id to a scoped URL and null to the bare route', () => {
+  assert.equal(storeHref('store_ge'), '/dashboard?store=store_ge');
+  assert.equal(storeHref(null), '/dashboard');
+  assert.equal(storeHref(undefined), '/dashboard');
+  // Ids are URL-encoded so odd characters can't break the query string.
+  assert.equal(storeHref('a b&c'), '/dashboard?store=a%20b%26c');
+});
+
+test('isStoreSwitchBlocked ignores clicks while pending or on the active scope', () => {
+  // A switch already in flight blocks every click.
+  assert.equal(isStoreSwitchBlocked(true, 'store_ge', null), true);
+  assert.equal(isStoreSwitchBlocked(true, null, null), true);
+  // Re-selecting the current scope is a no-op (null/undefined are the same scope).
+  assert.equal(isStoreSwitchBlocked(false, null, null), true);
+  assert.equal(isStoreSwitchBlocked(false, undefined, null), true);
+  assert.equal(isStoreSwitchBlocked(false, 'store_ge', 'store_ge'), true);
+  // A real switch to a different scope is allowed.
+  assert.equal(isStoreSwitchBlocked(false, 'store_ge', null), false);
+  assert.equal(isStoreSwitchBlocked(false, null, 'store_ge'), false);
+  assert.equal(isStoreSwitchBlocked(false, 'store_ashu', 'store_ge'), false);
+});
+
+// --- Inventory snapshot ---------------------------------------------------
+
+test('summariseInventory values stock at cost and counts low/negative products', () => {
+  const products: InventoryProductRow[] = [
+    { currentStock: 10, purchaseCost: 100, minStockLevel: 5 }, // healthy
+    { currentStock: 3, purchaseCost: 50, minStockLevel: 5 }, // low (<= min)
+    { currentStock: 5, purchaseCost: 20, minStockLevel: 5 }, // low (== min)
+    { currentStock: -2, purchaseCost: 40, minStockLevel: 0 }, // negative + low
+  ];
+  const snap = summariseInventory(products);
+  assert.equal(snap.stockValueAtCost, 10 * 100 + 3 * 50 + 5 * 20 + -2 * 40);
+  assert.equal(snap.totalUnits, 16);
+  assert.equal(snap.productCount, 4);
+  assert.equal(snap.lowStockCount, 3);
+  assert.equal(snap.negativeStockCount, 1);
+});
+
+test('summariseInventory returns zeroes for an empty product list', () => {
+  const snap = summariseInventory([]);
+  assert.deepEqual(snap, {
+    stockValueAtCost: 0,
+    totalUnits: 0,
+    productCount: 0,
+    lowStockCount: 0,
+    negativeStockCount: 0,
+  });
+});
+
+test('DashboardShell gives immediate, non-blank loading feedback on store switch', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'app/(dashboard)/dashboard/DashboardShell.tsx'),
+    'utf8'
+  );
+  // Spinner text beside the selector while a switch is loading.
+  assert.ok(src.includes('Updating dashboard'), 'shows an updating spinner label');
+  // Buttons disabled during the switch to prevent double navigation.
+  assert.ok(src.includes('disabled={isPending}'), 'disables store buttons while pending');
+  // Previous figures stay mounted but dimmed (never blank).
+  assert.ok(src.includes('aria-busy={isPending}'), 'marks the figures busy while pending');
+  assert.ok(src.includes('opacity-40'), 'dims the previous figures instead of blanking them');
+  // Double-click / repeat-navigation guard is wired to the pure helper.
+  assert.ok(src.includes('isStoreSwitchBlocked'), 'guards against repeat navigation');
 });
 
 test('Dashboard page no longer renders Cash Flow, settlement or profit-share cards', () => {

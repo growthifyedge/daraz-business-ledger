@@ -151,22 +151,155 @@ export interface Financials {
 }
 
 export async function getFinancials(f: Filter = {}): Promise<Financials> {
+  // Every read below is independent — each where-clause derives only from the
+  // filter, never from another query's result — so they are issued in ONE batch
+  // instead of the previous seven serial stages. Same inputs, same math, far
+  // fewer sequential round-trips (this is what made the Dashboard slow to switch
+  // stores). Build the pure where-clauses first, then fire every query together.
   const saleWhere = baseWhere(f);
+  const range = dateRange(f.from, f.to);
+  const returnRange = range; // returns share the same [from, to] window
 
-  const sales = await prisma.sale.findMany({
-    where: saleWhere,
-    select: {
-      quantitySold: true,
-      grossAmount: true,
-      commission: true,
-      vat: true,
-      otherCharges: true,
-      returnsRefunds: true,
-      netAmount: true,
-      unitCost: true,
-      product: { select: { purchaseCost: true } },
-    },
-  });
+  const returnScope: Prisma.ReturnWhereInput = { deletedAt: null };
+  if (returnRange) returnScope.returnDate = returnRange;
+  if (f.storeId) returnScope.storeId = f.storeId;
+
+  // Order Line IDs whose refund is ALREADY booked inside imported Daraz income
+  // (a REFUND fee line). A Return linked to one of these must not deduct the
+  // refund from P&L again — the Daraz statement is authoritative. Store-scoped;
+  // linkage is by identity (orderItemId), not date.
+  const importedRefundLinesWhere: Prisma.DarazIncomeLineWhereInput = {
+    fees: { some: { category: 'REFUND' } },
+  };
+  if (f.storeId) importedRefundLinesWhere.storeId = f.storeId;
+
+  // COGS recovery — a restocked unit puts its cost back on the shelf. Dated by
+  // receivedAt (when it physically returned), NOT returnDate. Independent of the
+  // refund's financial state — see recoversCogs() in lib/returns.ts.
+  const recoveryWhere: Prisma.ReturnWhereInput = {
+    deletedAt: null,
+    inventoryStatus: 'RESTOCKED',
+  };
+  if (returnRange) recoveryWhere.receivedAt = returnRange;
+  if (f.storeId) recoveryWhere.storeId = f.storeId;
+
+  // Operating expenses (exclude Daraz-side categories already in sales).
+  const expenseWhere: Prisma.ExpenseWhereInput = {
+    deletedAt: null,
+    category: { notIn: DARAZ_DUP_CATEGORIES },
+  };
+  if (range) expenseWhere.date = range;
+  if (f.storeId) expenseWhere.storeId = f.storeId;
+
+  // Accessories consumed cost — attributed to the accessory's purchaseDate (see
+  // note where accessoriesConsumed is computed below).
+  const accessoryWhere: Prisma.AccessoryWhereInput = { deletedAt: null };
+  if (range) accessoryWhere.purchaseDate = range;
+
+  // Imported Daraz income — a SEPARATE channel (store+date scoped). Recognised on
+  // accrual (all lines in scope); its Daraz fees + refunds are already inside its
+  // net. Never touches stock/COGS/Purchases/Yahya here.
+  const incomeWhere: Prisma.DarazIncomeLineWhereInput = {};
+  if (f.storeId) incomeWhere.storeId = f.storeId;
+  if (range) incomeWhere.transactionDate = range;
+
+  // Estimated Daraz COGS — exactly-Delivered order lines only, store+date scoped
+  // by order date. Resolves (storeId, sellerSku) via the saved mapping and costs
+  // at Product.purchaseCost. READ-ONLY: never writes stock/products/purchases.
+  const deliveredWhere: Prisma.DarazOrderItemWhereInput = {
+    status: { equals: 'delivered', mode: 'insensitive' },
+  };
+  if (f.storeId) deliveredWhere.storeId = f.storeId;
+  if (range) deliveredWhere.createTime = range;
+
+  const [
+    sales,
+    eligibleReturns,
+    platformAgg,
+    pendingAgg,
+    importedRefundLines,
+    restockedReturns,
+    expAgg,
+    accessories,
+    incomeRows,
+    deliveredLines,
+    skuMappings,
+    productCosts,
+    settledRows,
+  ] = await Promise.all([
+    prisma.sale.findMany({
+      where: saleWhere,
+      select: {
+        quantitySold: true,
+        grossAmount: true,
+        commission: true,
+        vat: true,
+        otherCharges: true,
+        returnsRefunds: true,
+        netAmount: true,
+        unitCost: true,
+        product: { select: { purchaseCost: true } },
+      },
+    }),
+    // Seller-charged completed returns — eligibility is enforced by the where.
+    prisma.return.findMany({
+      where: eligibleReturnWhere(f),
+      select: { refundAmount: true, orderItemId: true },
+    }),
+    // Daraz absorbed these — informational only.
+    prisma.return.aggregate({
+      where: { ...returnScope, refundStatus: 'COMPLETED', chargedTo: 'PLATFORM' },
+      _sum: { refundAmount: true },
+    }),
+    // Not settled — never counted as a loss.
+    prisma.return.aggregate({
+      where: { ...returnScope, refundStatus: 'PENDING' },
+      _sum: { refundAmount: true },
+    }),
+    prisma.darazIncomeLine.findMany({
+      where: importedRefundLinesWhere,
+      select: { orderItemId: true },
+    }),
+    prisma.return.findMany({
+      where: recoveryWhere,
+      select: {
+        quantity: true,
+        unitCost: true,
+        inventoryStatus: true,
+        deletedAt: true,
+        product: { select: { purchaseCost: true } },
+      },
+    }),
+    prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
+    prisma.accessory.findMany({
+      where: accessoryWhere,
+      select: { quantityUsed: true, unitCost: true },
+    }),
+    prisma.darazIncomeLine.findMany({
+      where: incomeWhere,
+      select: {
+        storeId: true,
+        statementNumber: true,
+        orderItemId: true,
+        transactionDate: true,
+        netAmount: true,
+        fees: { select: { category: true, amount: true } },
+      },
+    }),
+    prisma.darazOrderItem.findMany({
+      where: deliveredWhere,
+      select: { orderItemId: true, storeId: true, sellerSku: true, status: true, createTime: true, quantity: true },
+    }),
+    prisma.darazSkuMapping.findMany({ select: { storeId: true, sellerSku: true, productId: true } }),
+    prisma.product.findMany({ where: { deletedAt: null }, select: { id: true, purchaseCost: true } }),
+    // Order items that have settled income (appear on a statement). COGS is
+    // costed only for these — mirroring the Import dry-run, whose SKU resolution
+    // is driven by income lines — so a delivered order with no booked income is
+    // neither costed nor reported as an unmapped delivered unit. Matched by
+    // orderItemId only (income storeId is nullable / partly backfilled); the
+    // delivered order item is already store+date scoped above.
+    prisma.darazIncomeLine.findMany({ select: { orderItemId: true }, distinct: ['orderItemId'] }),
+  ]);
 
   let grossSales = 0,
     unitsSold = 0,
@@ -193,43 +326,7 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     netReceived += s.netAmount;
   }
 
-  // Returns module — dated by returnDate, filtered by store, same Filter shape.
-  const returnRange = dateRange(f.from, f.to);
-  const returnScope: Prisma.ReturnWhereInput = { deletedAt: null };
-  if (returnRange) returnScope.returnDate = returnRange;
-  if (f.storeId) returnScope.storeId = f.storeId;
-
-  // Order Line IDs whose refund is ALREADY booked inside imported Daraz income
-  // (a REFUND fee line). A Return linked to one of these must not deduct the
-  // refund from P&L again — the Daraz statement is authoritative. Store-scoped;
-  // linkage is by identity (orderItemId), not date.
-  const importedRefundLinesWhere: Prisma.DarazIncomeLineWhereInput = {
-    fees: { some: { category: 'REFUND' } },
-  };
-  if (f.storeId) importedRefundLinesWhere.storeId = f.storeId;
-
-  const [eligibleReturns, platformAgg, pendingAgg, importedRefundLines] = await Promise.all([
-    // Seller-charged completed returns — eligibility is enforced by the where.
-    prisma.return.findMany({
-      where: eligibleReturnWhere(f),
-      select: { refundAmount: true, orderItemId: true },
-    }),
-    // Daraz absorbed these — informational only.
-    prisma.return.aggregate({
-      where: { ...returnScope, refundStatus: 'COMPLETED', chargedTo: 'PLATFORM' },
-      _sum: { refundAmount: true },
-    }),
-    // Not settled — never counted as a loss.
-    prisma.return.aggregate({
-      where: { ...returnScope, refundStatus: 'PENDING' },
-      _sum: { refundAmount: true },
-    }),
-    prisma.darazIncomeLine.findMany({
-      where: importedRefundLinesWhere,
-      select: { orderItemId: true },
-    }),
-  ]);
-
+  // Returns → refunds that reduce profit (all fetched in the batch above).
   const importedRefundSet = new Set(importedRefundLines.map((l) => l.orderItemId));
   // Guard applied per return via the pure sellerLossForPnl rule.
   const returnModuleRefunds = eligibleReturns.reduce(
@@ -252,26 +349,9 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   // in Returns. See eligibleReturnWhere() for the full reasoning.
   const returnsRefunds = legacySaleRefunds + returnModuleRefunds;
 
-  // COGS recovery — a restocked unit puts its cost back on the shelf. Dated by
-  // receivedAt (when it physically returned), NOT returnDate. Independent of the
-  // refund's financial state — see recoversCogs() in lib/returns.ts. Per-row
-  // because a null unitCost snapshot falls back to the product's purchaseCost.
-  const recoveryWhere: Prisma.ReturnWhereInput = {
-    deletedAt: null,
-    inventoryStatus: 'RESTOCKED',
-  };
-  if (returnRange) recoveryWhere.receivedAt = returnRange;
-  if (f.storeId) recoveryWhere.storeId = f.storeId;
-  const restockedReturns = await prisma.return.findMany({
-    where: recoveryWhere,
-    select: {
-      quantity: true,
-      unitCost: true,
-      inventoryStatus: true,
-      deletedAt: true,
-      product: { select: { purchaseCost: true } },
-    },
-  });
+  // COGS recovery — restocked units put their cost back on the shelf (fetched in
+  // the batch above). Per-row because a null unitCost snapshot falls back to the
+  // product's purchaseCost.
   const recoveredCOGS = restockedReturns.reduce(
     (sum, r) =>
       sum +
@@ -290,36 +370,18 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
   const netProductCost = salesCOGS - recoveredCOGS;
   const productCost = netProductCost;
 
-  // Operating expenses (exclude Daraz-side categories already in sales).
-  const expenseWhere: Prisma.ExpenseWhereInput = {
-    deletedAt: null,
-    category: { notIn: DARAZ_DUP_CATEGORIES },
-  };
-  const range = dateRange(f.from, f.to);
-  if (range) expenseWhere.date = range;
-  if (f.storeId) expenseWhere.storeId = f.storeId;
-
-  const expAgg = await prisma.expense.aggregate({
-    where: expenseWhere,
-    _sum: { amount: true },
-  });
+  // Operating expenses (Daraz-side categories excluded — fetched in the batch).
   const operatingExpenses = expAgg._sum.amount ?? 0;
 
-  // Accessories consumed cost (cost of packing material actually used).
-  // Consumption has no per-use date in the schema, so it is attributed to the
-  // accessory's purchaseDate — this keeps period P&L date-bounded instead of
-  // always subtracting all-time consumption. (Precise consumption dating is a
-  // later phase.) Accessories carry NO storeId — they are unassigned/global — so
-  // in a single-store view they must NOT be deducted from that one store's
-  // profit (that was a cross-store leak). sumStoreScopedCosts treats null-store
-  // rows as global: excluded when a store filter is active, included in All
-  // Stores. Expenses above already scope the same way via their storeId column.
-  const accessoryWhere: Prisma.AccessoryWhereInput = { deletedAt: null };
-  if (range) accessoryWhere.purchaseDate = range;
-  const accessories = await prisma.accessory.findMany({
-    where: accessoryWhere,
-    select: { quantityUsed: true, unitCost: true },
-  });
+  // Accessories consumed cost (cost of packing material actually used; fetched in
+  // the batch above). Consumption has no per-use date in the schema, so it is
+  // attributed to the accessory's purchaseDate — this keeps period P&L
+  // date-bounded instead of always subtracting all-time consumption. Accessories
+  // carry NO storeId — they are unassigned/global — so in a single-store view they
+  // must NOT be deducted from that one store's profit (that was a cross-store
+  // leak). sumStoreScopedCosts treats null-store rows as global: excluded when a
+  // store filter is active, included in All Stores. Expenses scope the same way
+  // via their storeId column.
   const accessoriesConsumed = sumStoreScopedCosts(
     accessories.map((a) => ({ storeId: null, amount: a.quantityUsed * a.unitCost })),
     f.storeId ?? null
@@ -336,48 +398,11 @@ export async function getFinancials(f: Filter = {}): Promise<Financials> {
     accessoriesConsumed;
   const netProfit = grossSales - totalDeductions;
 
-  // Imported Daraz income — a SEPARATE channel (store+date scoped). Recognised on
-  // accrual (all lines in scope); its Daraz fees + refunds are already inside its
-  // net. Never touches stock/COGS/Purchases/Yahya here.
-  const incomeWhere: Prisma.DarazIncomeLineWhereInput = {};
-  if (f.storeId) incomeWhere.storeId = f.storeId;
-  if (range) incomeWhere.transactionDate = range;
-  const incomeRows = await prisma.darazIncomeLine.findMany({
-    where: incomeWhere,
-    select: {
-      storeId: true,
-      statementNumber: true,
-      orderItemId: true,
-      transactionDate: true,
-      netAmount: true,
-      fees: { select: { category: true, amount: true } },
-    },
-  });
+  // Imported Daraz income roll-up (lines fetched in the batch above).
   const daraz = rollUpDarazIncome(incomeRows);
 
-  // Estimated Daraz COGS — exactly-Delivered order lines only, store+date scoped
-  // by order date. Resolves (storeId, sellerSku) via the saved mapping and costs
-  // at Product.purchaseCost. READ-ONLY: never writes stock/products/purchases.
-  const deliveredWhere: Prisma.DarazOrderItemWhereInput = {
-    status: { equals: 'delivered', mode: 'insensitive' },
-  };
-  if (f.storeId) deliveredWhere.storeId = f.storeId;
-  if (range) deliveredWhere.createTime = range;
-  const [deliveredLines, skuMappings, productCosts, settledRows] = await Promise.all([
-    prisma.darazOrderItem.findMany({
-      where: deliveredWhere,
-      select: { orderItemId: true, storeId: true, sellerSku: true, status: true, createTime: true, quantity: true },
-    }),
-    prisma.darazSkuMapping.findMany({ select: { storeId: true, sellerSku: true, productId: true } }),
-    prisma.product.findMany({ where: { deletedAt: null }, select: { id: true, purchaseCost: true } }),
-    // Order items that have settled income (appear on a statement). COGS is
-    // costed only for these — mirroring the Import dry-run, whose SKU resolution
-    // is driven by income lines — so a delivered order with no booked income is
-    // neither costed nor reported as an unmapped delivered unit. Matched by
-    // orderItemId only (income storeId is nullable / partly backfilled); the
-    // delivered order item is already store+date scoped above.
-    prisma.darazIncomeLine.findMany({ select: { orderItemId: true }, distinct: ['orderItemId'] }),
-  ]);
+  // Estimated Daraz COGS — exactly-Delivered order lines, costed at purchaseCost
+  // via the saved (storeId, sellerSku) mapping. All inputs fetched in the batch.
   const settledOrderItemIds = new Set(settledRows.map((r) => r.orderItemId));
   const darazCogs = estimateDarazCogs(
     deliveredLines.map((l) => ({
