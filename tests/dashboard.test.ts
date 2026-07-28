@@ -133,6 +133,30 @@ test('DashboardShell gives immediate, non-blank loading feedback on store switch
   assert.ok(src.includes('isStoreSwitchBlocked'), 'guards against repeat navigation');
 });
 
+test('Dashboard COGS warning is actionable, quantified, and coverage-gated', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'app/(dashboard)/dashboard/page.tsx'),
+    'utf8'
+  );
+  // The vague old copy is gone.
+  assert.ok(!src.includes('Some delivered units have no cost yet'), 'drops the vague warning');
+  // New copy names the exact shortfall and what the estimate excludes.
+  assert.ok(src.includes('COGS incomplete:'), 'leads with a clear COGS-incomplete label');
+  assert.ok(src.includes('still need a product purchase cost'), 'explains what is missing');
+  assert.ok(src.includes('Estimated profit excludes those units'), 'states the estimate impact');
+  // It quantifies X of Y using the coverage figures.
+  assert.ok(src.includes('formatNumber(uncoveredUnits)'), 'shows the uncovered unit count');
+  assert.ok(
+    src.includes('formatNumber(coverage.deliveredUnits)'),
+    'shows the delivered unit total'
+  );
+  // A direct action to fix it, pointing at Products & Inventory.
+  assert.ok(src.includes('Review products'), 'offers a Review products action');
+  assert.ok(src.includes('href="/products"'), 'links the action to Products & Inventory');
+  // Only rendered when coverage is below 100% (gated on !coverageComplete).
+  assert.ok(src.includes('{!coverageComplete && ('), 'only shows below full coverage');
+});
+
 test('Dashboard page no longer renders Cash Flow, settlement or profit-share cards', () => {
   const src = readFileSync(
     resolve(process.cwd(), 'app/(dashboard)/dashboard/page.tsx'),
