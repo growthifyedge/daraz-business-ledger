@@ -156,7 +156,10 @@ export default async function DashboardPage({
                   COGS incomplete: {formatNumber(uncoveredUnits)} of {formatNumber(coverage.deliveredUnits)} delivered
                   units still need a product purchase cost. Estimated profit excludes those units.
                 </span>
-                <Link href="/products" className="font-medium text-amber-900 underline hover:no-underline">
+                <Link
+                  href={storeId ? `/products/missing-cogs?store=${encodeURIComponent(storeId)}` : '/products/missing-cogs'}
+                  className="font-medium text-amber-900 underline hover:no-underline"
+                >
                   Review products
                 </Link>
               </div>
