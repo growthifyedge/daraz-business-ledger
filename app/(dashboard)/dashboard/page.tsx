@@ -85,6 +85,8 @@ export default async function DashboardPage({
 
   const coverage = fin.darazCogs;
   const coverageComplete = coverage.deliveredUnits === 0 || coverage.coveragePct >= 100;
+  // Delivered units still missing a purchase cost — the ones the estimate leaves out.
+  const uncoveredUnits = coverage.deliveredUnits - coverage.costedUnits;
 
   const scopeLabel = activeStore ? activeStore.name : 'All Stores';
 
@@ -149,9 +151,15 @@ export default async function DashboardPage({
           <Card className="mb-3 border-amber-200 bg-amber-50/70">
             <CardBody className="flex items-start gap-2 py-3">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <p className="text-xs leading-relaxed text-amber-800">
-                Some delivered units have no cost yet; profit is incomplete.
-              </p>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-relaxed text-amber-800">
+                <span>
+                  COGS incomplete: {formatNumber(uncoveredUnits)} of {formatNumber(coverage.deliveredUnits)} delivered
+                  units still need a product purchase cost. Estimated profit excludes those units.
+                </span>
+                <Link href="/products" className="font-medium text-amber-900 underline hover:no-underline">
+                  Review products
+                </Link>
+              </div>
             </CardBody>
           </Card>
         )}
