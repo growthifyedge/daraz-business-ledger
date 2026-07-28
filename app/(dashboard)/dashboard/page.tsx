@@ -1,341 +1,232 @@
 import Link from 'next/link';
-import {
-  getFinancials,
-  getStockValue,
-  getCashFlow,
-  getLowStockProducts,
-  getInventoryMovement,
-  getMonthlyTrend,
-} from '@/lib/calculations';
+import { getFinancials, getStockValue } from '@/lib/calculations';
+import { summariseDarazIncome, type DashboardIncomeLine } from '@/lib/dashboard';
 import { prisma } from '@/lib/prisma';
-import {
-  Card,
-  CardBody,
-  CardHeader,
-  StatCard,
-  Badge,
-  Table,
-  THead,
-  TH,
-  TD,
-  TRow,
-} from '@/components/ui';
-import { TrendChart, SplitChart } from '@/components/DashboardCharts';
-import { formatMoney, formatMoneyCompact, formatNumber, formatDate, humanize } from '@/lib/utils';
-import {
-  Wallet,
-  Package,
-  TrendingUp,
-  Receipt,
-  PieChart,
-  AlertTriangle,
-  Boxes,
-  ArrowUpRight,
-} from 'lucide-react';
+import type { SearchParams } from '@/lib/filters';
+import { Card, CardBody, StatCard } from '@/components/ui';
+import { formatMoney, formatNumber } from '@/lib/utils';
+import { Wallet, Banknote, Clock, PieChart, Receipt, Package, Boxes, AlertTriangle } from 'lucide-react';
 
 export const metadata = { title: 'Dashboard' };
 export const dynamic = 'force-dynamic';
 
-export default async function DashboardPage() {
-  const [fin, stock, cash, lowStock, movement, trend, recentPurchases, recentExpenses, recentSales] =
-    await Promise.all([
-      getFinancials(),
-      getStockValue(),
-      getCashFlow(),
-      getLowStockProducts(6),
-      getInventoryMovement(),
-      getMonthlyTrend(6),
-      prisma.purchase.findMany({
-        where: { deletedAt: null },
-        orderBy: { date: 'desc' },
-        take: 5,
-        include: { product: { select: { name: true } } },
-      }),
-      prisma.expense.findMany({
-        where: { deletedAt: null },
-        orderBy: { date: 'desc' },
-        take: 5,
-      }),
-      prisma.sale.findMany({
-        where: { deletedAt: null },
-        orderBy: { date: 'desc' },
-        take: 5,
-        include: { product: { select: { name: true } } },
-      }),
-    ]);
+function one(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v[0] : v;
+}
 
-  const bestSelling = [...movement].sort((a, b) => b.units - a.units).slice(0, 5).filter((p) => p.units > 0);
-  const slowMoving = [...movement].sort((a, b) => a.units - b.units).slice(0, 5);
+/** A card that links to a related page — reuses StatCard, keeps it clickable. */
+function LinkStat({ href, ...stat }: { href: string } & Parameters<typeof StatCard>[0]) {
+  return (
+    <Link href={href} className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-xl">
+      <StatCard {...stat} />
+    </Link>
+  );
+}
+
+function SectionNote({ children }: { children: React.ReactNode }) {
+  return <p className="mt-1 mb-3 text-sm text-slate-500">{children}</p>;
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const sp = await searchParams;
+  const requestedStore = one(sp.store) ?? null;
+
+  const stores = await prisma.store.findMany({
+    where: { deletedAt: null },
+    orderBy: { name: 'asc' },
+    select: { id: true, name: true },
+  });
+
+  // Only honour a store id that actually exists; otherwise fall back to All Stores.
+  const storeId = requestedStore && stores.some((s) => s.id === requestedStore) ? requestedStore : null;
+  const activeStore = stores.find((s) => s.id === storeId) ?? null;
+
+  const [fin, stock, incomeRows, products] = await Promise.all([
+    getFinancials({ storeId }),
+    getStockValue(),
+    prisma.darazIncomeLine.findMany({
+      select: { storeId: true, releaseStatus: true, netAmount: true },
+    }),
+    prisma.product.findMany({
+      where: { deletedAt: null, active: true },
+      select: { currentStock: true, minStockLevel: true },
+    }),
+  ]);
+
+  // Daraz income scoped by the store filter through the pure, tested helper.
+  const income = summariseDarazIncome(incomeRows as DashboardIncomeLine[], storeId);
+
+  const lowStockCount = products.filter((p) => p.currentStock <= p.minStockLevel).length;
+  const negativeStockCount = products.filter((p) => p.currentStock < 0).length;
+
+  const coverage = fin.darazCogs;
+  const coverageComplete = coverage.deliveredUnits === 0 || coverage.coveragePct >= 100;
+
+  const scopeLabel = activeStore ? activeStore.name : 'All Stores';
+
+  const filters: { id: string | null; label: string }[] = [
+    { id: null, label: 'All Stores' },
+    ...stores.map((s) => ({ id: s.id, label: s.name })),
+  ];
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
-          Dashboard
-        </h1>
+      <div className="mb-4">
+        <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Dashboard</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Business overview across all Daraz stores (all-time).
+          Business overview for <span className="font-medium text-slate-700">{scopeLabel}</span> (all-time).
         </p>
       </div>
 
-      {/* KPI row 1 */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-        <StatCard
-          label="Total Investment"
-          value={formatMoneyCompact(cash.investment)}
-          icon={<Wallet size={18} />}
-          tone="brand"
-        />
-        <StatCard
-          label="Current Stock Value"
-          value={formatMoneyCompact(stock.stockValueAtCost)}
-          hint={`${formatNumber(stock.totalUnits)} units · at cost`}
-          icon={<Package size={18} />}
-        />
-        <StatCard
-          label="Manual Sales Income"
-          value={formatMoneyCompact(fin.grossSales)}
-          hint={`Source: Manual · ${formatNumber(fin.unitsSold)} units`}
-          icon={<TrendingUp size={18} />}
-          tone="positive"
-        />
-        <StatCard
-          label="Daraz Import (net)"
-          value={formatMoneyCompact(fin.daraz.net)}
-          hint={`Source: Daraz Import · ${formatNumber(fin.daraz.statements)} statement(s)`}
-          icon={<TrendingUp size={18} />}
-          tone="brand"
-        />
-        <StatCard
-          label="Total Expenses"
-          value={formatMoneyCompact(cash.expensesPaid)}
-          icon={<Receipt size={18} />}
-        />
-        <StatCard
-          label="Manual Net Profit"
-          value={formatMoneyCompact(fin.netProfit)}
-          hint="Manual channel, after all costs"
-          tone={fin.netProfit >= 0 ? 'positive' : 'negative'}
-        />
-        <StatCard
-          label="Est. Daraz COGS"
-          value={`− ${formatMoneyCompact(fin.estimatedDarazCogs)}`}
-          hint={`Delivered · ${formatNumber(fin.darazCogs.coveragePct)}% costed`}
-          tone="negative"
-        />
-        <StatCard
-          label="Est. Business Net Profit"
-          value={formatMoneyCompact(fin.combinedNetProfit)}
-          hint="Daraz net − est. COGS − operating costs"
-          icon={<PieChart size={18} />}
-          tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
-        />
-        <StatCard
-          label="Est. Yahya Share (50%)"
-          value={formatMoneyCompact(fin.yahyaShare)}
-          tone="brand"
-        />
-        <StatCard
-          label="Est. Owner Share (50%)"
-          value={formatMoneyCompact(fin.ownerShare)}
-          tone="brand"
-        />
+      {/* Store filter — scopes every figure below. Default: All Stores. */}
+      <div className="mb-6 flex flex-wrap gap-2">
+        {filters.map((f) => {
+          const active = (f.id ?? null) === storeId;
+          const href = f.id ? `/dashboard?store=${f.id}` : '/dashboard';
+          return (
+            <Link
+              key={f.id ?? 'all'}
+              href={href}
+              className={
+                active
+                  ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm'
+                  : 'rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 hover:border-brand-300 hover:text-brand-700'
+              }
+            >
+              {f.label}
+            </Link>
+          );
+        })}
       </div>
 
-      {/* Charts */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader title="Sales & Profit Trend" subtitle="Last 6 months" />
-          <CardBody>
-            <TrendChart data={trend} />
-          </CardBody>
-        </Card>
-        <Card>
-          <CardHeader title="Profit Distribution" subtitle="Net profit split" />
-          <CardBody>
-            <SplitChart yahya={fin.yahyaShare} owner={fin.ownerShare} />
-          </CardBody>
-        </Card>
-      </div>
-
-      {/* Stock health */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <Card>
-          <CardHeader
-            title={
-              <span className="flex items-center gap-1.5">
-                <AlertTriangle className="h-4 w-4 text-amber-500" /> Low Stock
-              </span>
-            }
-            action={
-              <Link href="/reports/restocking" className="text-xs font-medium text-brand-600 hover:underline">
-                Restock report
-              </Link>
-            }
+      {/* 1. Daraz income */}
+      <section className="mb-8">
+        <h2 className="text-base font-semibold text-slate-900">Daraz income</h2>
+        <SectionNote>
+          Money from your imported Daraz statements. <strong>Released</strong> has already been paid out;{' '}
+          <strong>Ready to Release</strong> is confirmed but not yet paid. Together they equal your Daraz Net Income.
+        </SectionNote>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <LinkStat
+            href="/payouts"
+            label="Daraz Net Income"
+            value={formatMoney(income.net)}
+            hint="Imported Daraz statements"
+            icon={<Wallet size={18} />}
+            tone="brand"
           />
-          <CardBody className="p-0">
-            {lowStock.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">
-                All products above minimum level.
-              </p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {lowStock.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between px-5 py-2.5 text-sm">
-                    <span className="truncate text-slate-700">{p.name}</span>
-                    <Badge tone={p.currentStock === 0 ? 'red' : 'amber'}>
-                      {p.currentStock} / {p.minStockLevel}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader title="Best Selling" subtitle="By units sold" />
-          <CardBody className="p-0">
-            {bestSelling.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">
-                No sales recorded yet.
-              </p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {bestSelling.map((p) => (
-                  <li key={p.productId} className="flex items-center justify-between px-5 py-2.5 text-sm">
-                    <span className="truncate text-slate-700">{p.name}</span>
-                    <span className="flex items-center gap-1 font-medium text-emerald-600">
-                      <ArrowUpRight className="h-3.5 w-3.5" />
-                      {formatNumber(p.units)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader
-            title={
-              <span className="flex items-center gap-1.5">
-                <Boxes className="h-4 w-4 text-slate-400" /> Slow Moving
-              </span>
-            }
-            subtitle="Fewest units sold"
+          <LinkStat
+            href="/payouts"
+            label="Released Payouts"
+            value={formatMoney(income.released)}
+            hint="Already paid out"
+            icon={<Banknote size={18} />}
+            tone="positive"
           />
-          <CardBody className="p-0">
-            {slowMoving.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">
-                No products yet.
+          <LinkStat
+            href="/payouts"
+            label="Ready to Release"
+            value={formatMoney(income.ready)}
+            hint="Confirmed, not yet paid"
+            icon={<Clock size={18} />}
+            tone="warning"
+          />
+        </div>
+      </section>
+
+      {/* 2. Profitability */}
+      <section className="mb-8">
+        <h2 className="text-base font-semibold text-slate-900">Profitability</h2>
+        <SectionNote>
+          What you actually keep after product cost and running costs. COGS is the estimated cost of the goods you sold
+          on Daraz; the business net profit is your Daraz income minus those costs.
+        </SectionNote>
+        {!coverageComplete && (
+          <Card className="mb-3 border-amber-200 bg-amber-50/70">
+            <CardBody className="flex items-start gap-2 py-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <p className="text-xs leading-relaxed text-amber-800">
+                Some delivered units have no cost yet; profit is incomplete.
               </p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {slowMoving.map((p) => (
-                  <li key={p.productId} className="flex items-center justify-between px-5 py-2.5 text-sm">
-                    <span className="truncate text-slate-700">{p.name}</span>
-                    <span className="text-slate-400">
-                      {formatNumber(p.units)} sold · {p.currentStock} in stock
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardBody>
-        </Card>
-      </div>
+            </CardBody>
+          </Card>
+        )}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <LinkStat
+            href="/profit-loss"
+            label="Estimated Daraz COGS"
+            value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
+            hint="Cost of goods sold (estimated)"
+            icon={<Receipt size={18} />}
+            tone="negative"
+          />
+          <LinkStat
+            href="/profit-loss"
+            label="COGS Coverage"
+            value={`${formatNumber(coverage.costedUnits)}/${formatNumber(coverage.deliveredUnits)}`}
+            hint="delivered units costed"
+            icon={<PieChart size={18} />}
+            tone={coverageComplete ? 'positive' : 'warning'}
+          />
+          <LinkStat
+            href="/profit-loss"
+            label="Operating Expenses"
+            value={`− ${formatMoney(fin.operatingExpenses)}`}
+            hint="Packaging, transport, misc."
+            icon={<Receipt size={18} />}
+            tone="negative"
+          />
+          <LinkStat
+            href="/profit-loss"
+            label="Estimated Business Net Profit"
+            value={formatMoney(fin.combinedNetProfit)}
+            hint="Daraz income − COGS − running costs"
+            icon={<PieChart size={18} />}
+            tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
+          />
+        </div>
+      </section>
 
-      {/* Recent activity */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <Card>
-          <CardHeader title="Recent Sales" action={<Link href="/sales" className="text-xs font-medium text-brand-600 hover:underline">View all</Link>} />
-          <CardBody className="p-0">
-            {recentSales.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">No sales yet.</p>
-            ) : (
-              <Table>
-                <THead>
-                  <TRow>
-                    <TH>Product</TH>
-                    <TH align="right">Net</TH>
-                    <TH>Date</TH>
-                  </TRow>
-                </THead>
-                <tbody>
-                  {recentSales.map((s) => (
-                    <TRow key={s.id}>
-                      <TD className="max-w-[140px] truncate">{s.product.name}</TD>
-                      <TD align="right">{formatMoney(s.netAmount)}</TD>
-                      <TD>{formatDate(s.date)}</TD>
-                    </TRow>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader title="Recent Purchases" action={<Link href="/purchases" className="text-xs font-medium text-brand-600 hover:underline">View all</Link>} />
-          <CardBody className="p-0">
-            {recentPurchases.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">No purchases yet.</p>
-            ) : (
-              <Table>
-                <THead>
-                  <TRow>
-                    <TH>Product</TH>
-                    <TH align="right">Cost</TH>
-                    <TH>Status</TH>
-                  </TRow>
-                </THead>
-                <tbody>
-                  {recentPurchases.map((p) => (
-                    <TRow key={p.id}>
-                      <TD className="max-w-[140px] truncate">{p.product.name}</TD>
-                      <TD align="right">{formatMoney(p.totalCost)}</TD>
-                      <TD>
-                        <Badge tone={p.paymentStatus === 'PAID' ? 'green' : 'amber'}>
-                          {humanize(p.paymentStatus)}
-                        </Badge>
-                      </TD>
-                    </TRow>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader title="Recent Expenses" action={<Link href="/expenses" className="text-xs font-medium text-brand-600 hover:underline">View all</Link>} />
-          <CardBody className="p-0">
-            {recentExpenses.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-slate-400">No expenses yet.</p>
-            ) : (
-              <Table>
-                <THead>
-                  <TRow>
-                    <TH>Category</TH>
-                    <TH align="right">Amount</TH>
-                    <TH>Date</TH>
-                  </TRow>
-                </THead>
-                <tbody>
-                  {recentExpenses.map((e) => (
-                    <TRow key={e.id}>
-                      <TD className="max-w-[140px] truncate">{humanize(e.category)}</TD>
-                      <TD align="right">{formatMoney(e.amount)}</TD>
-                      <TD>{formatDate(e.date)}</TD>
-                    </TRow>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-          </CardBody>
-        </Card>
-      </div>
+      {/* 3. Inventory */}
+      <section className="mb-4">
+        <h2 className="text-base font-semibold text-slate-900">Inventory</h2>
+        <SectionNote>
+          What you are holding in stock right now, valued at cost. Stock is tracked across all stores. Open{' '}
+          <Link href="/products" className="font-medium text-brand-600 hover:underline">
+            Products &amp; Inventory
+          </Link>{' '}
+          to manage it.
+        </SectionNote>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <LinkStat
+            href="/products"
+            label="Current Stock Value"
+            value={formatMoney(stock.stockValueAtCost)}
+            hint="At purchase cost"
+            icon={<Wallet size={18} />}
+            tone="brand"
+          />
+          <LinkStat
+            href="/products"
+            label="Units in Stock"
+            value={formatNumber(stock.totalUnits)}
+            hint={`${formatNumber(stock.productCount)} active product(s)`}
+            icon={<Package size={18} />}
+          />
+          <LinkStat
+            href="/products"
+            label="Low / Negative Stock"
+            value={`${formatNumber(lowStockCount)}${negativeStockCount > 0 ? ` / ${formatNumber(negativeStockCount)}` : ''}`}
+            hint={negativeStockCount > 0 ? 'products low / negative' : 'products at or below minimum'}
+            icon={<Boxes size={18} />}
+            tone={negativeStockCount > 0 ? 'negative' : lowStockCount > 0 ? 'warning' : 'default'}
+          />
+        </div>
+      </section>
     </div>
   );
 }
