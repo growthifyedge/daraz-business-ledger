@@ -62,33 +62,36 @@ export function DashboardShell({
   return (
     <div>
       {/* Store filter — scopes every figure below. Default: All Stores. */}
-      <div className="mb-6 flex flex-wrap items-center gap-2">
-        {options.map((o) => {
-          const active = (o.id ?? null) === selected;
-          return (
-            <button
-              key={o.id ?? 'all'}
-              type="button"
-              onClick={() => switchStore(o.id)}
-              disabled={isPending}
-              aria-pressed={active}
-              aria-current={active ? 'true' : undefined}
-              className={
-                active
-                  ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm disabled:cursor-not-allowed'
-                  : 'rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 transition hover:border-brand-300 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-60'
-              }
-            >
-              {o.label}
-            </button>
-          );
-        })}
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Store</span>
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-card">
+          {options.map((o) => {
+            const active = (o.id ?? null) === selected;
+            return (
+              <button
+                key={o.id ?? 'all'}
+                type="button"
+                onClick={() => switchStore(o.id)}
+                disabled={isPending}
+                aria-pressed={active}
+                aria-current={active ? 'true' : undefined}
+                className={
+                  active
+                    ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed'
+                    : 'rounded-full px-4 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-60'
+                }
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
 
         {isPending && (
           <span
             role="status"
             aria-live="polite"
-            className="ml-1 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-600"
           >
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             Updating dashboard…
