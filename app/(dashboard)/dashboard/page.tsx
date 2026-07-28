@@ -1,13 +1,23 @@
 import Link from 'next/link';
-import { getFinancials, getStockValue } from '@/lib/calculations';
-import { summariseDarazIncome, type DashboardIncomeLine } from '@/lib/dashboard';
+import { getFinancials } from '@/lib/calculations';
+import {
+  summariseDarazIncome,
+  summariseInventory,
+  type DashboardIncomeLine,
+  type InventoryProductRow,
+} from '@/lib/dashboard';
 import { prisma } from '@/lib/prisma';
 import type { SearchParams } from '@/lib/filters';
+import type { Prisma } from '@prisma/client';
 import { Card, CardBody, StatCard } from '@/components/ui';
 import { formatMoney, formatNumber } from '@/lib/utils';
 import { Wallet, Banknote, Clock, PieChart, Receipt, Package, Boxes, AlertTriangle } from 'lucide-react';
+import { DashboardShell, type StoreOption } from './DashboardShell';
 
 export const metadata = { title: 'Dashboard' };
+// Always render fresh: financial figures must never be stale after an import,
+// purchase, expense or SKU-mapping change. (Prefetching the other store scopes
+// only warms the route; each navigation still re-runs these queries.)
 export const dynamic = 'force-dynamic';
 
 function one(v: string | string[] | undefined): string | undefined {
@@ -35,40 +45,50 @@ export default async function DashboardPage({
   const sp = await searchParams;
   const requestedStore = one(sp.store) ?? null;
 
-  const stores = await prisma.store.findMany({
+  // Store list drives both the filter buttons and the store-id validation. It is
+  // fetched alongside the heavy figures below so the two run in parallel.
+  const storesPromise = prisma.store.findMany({
     where: { deletedAt: null },
     orderBy: { name: 'asc' },
     select: { id: true, name: true },
   });
 
-  // Only honour a store id that actually exists; otherwise fall back to All Stores.
-  const storeId = requestedStore && stores.some((s) => s.id === requestedStore) ? requestedStore : null;
-  const activeStore = stores.find((s) => s.id === storeId) ?? null;
+  // Scope the income query at the database when a store is selected (fewer rows),
+  // instead of pulling every line and filtering in memory.
+  const incomeWhere: Prisma.DarazIncomeLineWhereInput = requestedStore
+    ? { storeId: requestedStore }
+    : {};
 
-  const [fin, stock, incomeRows, products] = await Promise.all([
-    getFinancials({ storeId }),
-    getStockValue(),
+  // All four reads are independent — issued in one batch. getFinancials internally
+  // batches its own reads too, so a store switch is a couple of parallel round-
+  // trips rather than a long serial chain.
+  const [stores, fin, incomeRows, productRows] = await Promise.all([
+    storesPromise,
+    getFinancials({ storeId: requestedStore }),
     prisma.darazIncomeLine.findMany({
+      where: incomeWhere,
       select: { storeId: true, releaseStatus: true, netAmount: true },
     }),
     prisma.product.findMany({
       where: { deletedAt: null, active: true },
-      select: { currentStock: true, minStockLevel: true },
+      select: { currentStock: true, purchaseCost: true, minStockLevel: true },
     }),
   ]);
 
-  // Daraz income scoped by the store filter through the pure, tested helper.
-  const income = summariseDarazIncome(incomeRows as DashboardIncomeLine[], storeId);
+  // Only honour a store id that actually exists; otherwise fall back to All Stores.
+  const storeId = requestedStore && stores.some((s) => s.id === requestedStore) ? requestedStore : null;
+  const activeStore = stores.find((s) => s.id === storeId) ?? null;
 
-  const lowStockCount = products.filter((p) => p.currentStock <= p.minStockLevel).length;
-  const negativeStockCount = products.filter((p) => p.currentStock < 0).length;
+  // Daraz income + inventory derived by the pure, tested helpers.
+  const income = summariseDarazIncome(incomeRows as DashboardIncomeLine[], storeId);
+  const inventory = summariseInventory(productRows as InventoryProductRow[]);
 
   const coverage = fin.darazCogs;
   const coverageComplete = coverage.deliveredUnits === 0 || coverage.coveragePct >= 100;
 
   const scopeLabel = activeStore ? activeStore.name : 'All Stores';
 
-  const filters: { id: string | null; label: string }[] = [
+  const storeOptions: StoreOption[] = [
     { id: null, label: 'All Stores' },
     ...stores.map((s) => ({ id: s.id, label: s.name })),
   ];
@@ -82,27 +102,7 @@ export default async function DashboardPage({
         </p>
       </div>
 
-      {/* Store filter — scopes every figure below. Default: All Stores. */}
-      <div className="mb-6 flex flex-wrap gap-2">
-        {filters.map((f) => {
-          const active = (f.id ?? null) === storeId;
-          const href = f.id ? `/dashboard?store=${f.id}` : '/dashboard';
-          return (
-            <Link
-              key={f.id ?? 'all'}
-              href={href}
-              className={
-                active
-                  ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm'
-                  : 'rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 hover:border-brand-300 hover:text-brand-700'
-              }
-            >
-              {f.label}
-            </Link>
-          );
-        })}
-      </div>
-
+      <DashboardShell storeId={storeId} options={storeOptions}>
       {/* 1. Daraz income */}
       <section className="mb-8">
         <h2 className="text-base font-semibold text-slate-900">Daraz income</h2>
@@ -205,7 +205,7 @@ export default async function DashboardPage({
           <LinkStat
             href="/products"
             label="Current Stock Value"
-            value={formatMoney(stock.stockValueAtCost)}
+            value={formatMoney(inventory.stockValueAtCost)}
             hint="At purchase cost"
             icon={<Wallet size={18} />}
             tone="brand"
@@ -213,20 +213,21 @@ export default async function DashboardPage({
           <LinkStat
             href="/products"
             label="Units in Stock"
-            value={formatNumber(stock.totalUnits)}
-            hint={`${formatNumber(stock.productCount)} active product(s)`}
+            value={formatNumber(inventory.totalUnits)}
+            hint={`${formatNumber(inventory.productCount)} active product(s)`}
             icon={<Package size={18} />}
           />
           <LinkStat
             href="/products"
             label="Low / Negative Stock"
-            value={`${formatNumber(lowStockCount)}${negativeStockCount > 0 ? ` / ${formatNumber(negativeStockCount)}` : ''}`}
-            hint={negativeStockCount > 0 ? 'products low / negative' : 'products at or below minimum'}
+            value={`${formatNumber(inventory.lowStockCount)}${inventory.negativeStockCount > 0 ? ` / ${formatNumber(inventory.negativeStockCount)}` : ''}`}
+            hint={inventory.negativeStockCount > 0 ? 'products low / negative' : 'products at or below minimum'}
             icon={<Boxes size={18} />}
-            tone={negativeStockCount > 0 ? 'negative' : lowStockCount > 0 ? 'warning' : 'default'}
+            tone={inventory.negativeStockCount > 0 ? 'negative' : inventory.lowStockCount > 0 ? 'warning' : 'default'}
           />
         </div>
       </section>
+      </DashboardShell>
     </div>
   );
 }
