@@ -9,10 +9,20 @@ import {
 import { prisma } from '@/lib/prisma';
 import type { SearchParams } from '@/lib/filters';
 import type { Prisma } from '@prisma/client';
-import { Card, CardBody, StatCard } from '@/components/ui';
 import { formatMoney, formatNumber } from '@/lib/utils';
-import { Wallet, Banknote, Clock, PieChart, Receipt, Package, Boxes, AlertTriangle } from 'lucide-react';
+import {
+  Wallet,
+  Banknote,
+  Clock,
+  PieChart,
+  Receipt,
+  Package,
+  Boxes,
+  AlertTriangle,
+  TrendingUp,
+} from 'lucide-react';
 import { DashboardShell, type StoreOption } from './DashboardShell';
+import { KpiCard, SectionHeader } from './DashboardCards';
 
 export const metadata = { title: 'Dashboard' };
 // Always render fresh: financial figures must never be stale after an import,
@@ -22,19 +32,6 @@ export const dynamic = 'force-dynamic';
 
 function one(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
-}
-
-/** A card that links to a related page — reuses StatCard, keeps it clickable. */
-function LinkStat({ href, ...stat }: { href: string } & Parameters<typeof StatCard>[0]) {
-  return (
-    <Link href={href} className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-xl">
-      <StatCard {...stat} />
-    </Link>
-  );
-}
-
-function SectionNote({ children }: { children: React.ReactNode }) {
-  return <p className="mt-1 mb-3 text-sm text-slate-500">{children}</p>;
 }
 
 export default async function DashboardPage({
@@ -97,23 +94,30 @@ export default async function DashboardPage({
 
   return (
     <div>
-      <div className="mb-4">
-        <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Dashboard</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Business overview for <span className="font-medium text-slate-700">{scopeLabel}</span> (all-time).
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Dashboard</h1>
+        <p className="mt-1.5 text-sm text-slate-500">
+          Business overview for <span className="font-semibold text-slate-700">{scopeLabel}</span> · all-time
         </p>
       </div>
 
       <DashboardShell storeId={storeId} options={storeOptions}>
       {/* 1. Daraz income */}
-      <section className="mb-8">
-        <h2 className="text-base font-semibold text-slate-900">Daraz income</h2>
-        <SectionNote>
-          Money from your imported Daraz statements. <strong>Released</strong> has already been paid out;{' '}
-          <strong>Ready to Release</strong> is confirmed but not yet paid. Together they equal your Daraz Net Income.
-        </SectionNote>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <LinkStat
+      <section className="mb-9">
+        <SectionHeader
+          icon={<Wallet size={18} />}
+          tone="brand"
+          title="Daraz income"
+          note={
+            <>
+              Money from your imported Daraz statements. <strong className="font-semibold text-slate-600">Released</strong>{' '}
+              has already been paid out; <strong className="font-semibold text-slate-600">Ready to Release</strong> is
+              confirmed but not yet paid. Together they equal your Daraz Net Income.
+            </>
+          }
+        />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <KpiCard
             href="/payouts"
             label="Daraz Net Income"
             value={formatMoney(income.net)}
@@ -121,7 +125,7 @@ export default async function DashboardPage({
             icon={<Wallet size={18} />}
             tone="brand"
           />
-          <LinkStat
+          <KpiCard
             href="/payouts"
             label="Released Payouts"
             value={formatMoney(income.released)}
@@ -129,7 +133,7 @@ export default async function DashboardPage({
             icon={<Banknote size={18} />}
             tone="positive"
           />
-          <LinkStat
+          <KpiCard
             href="/payouts"
             label="Ready to Release"
             value={formatMoney(income.ready)}
@@ -141,33 +145,40 @@ export default async function DashboardPage({
       </section>
 
       {/* 2. Profitability */}
-      <section className="mb-8">
-        <h2 className="text-base font-semibold text-slate-900">Profitability</h2>
-        <SectionNote>
-          What you actually keep after product cost and running costs. COGS is the estimated cost of the goods you sold
-          on Daraz; the business net profit is your Daraz income minus those costs.
-        </SectionNote>
+      <section className="mb-9">
+        <SectionHeader
+          icon={<TrendingUp size={18} />}
+          tone="positive"
+          title="Profitability"
+          note={
+            <>
+              What you actually keep after product cost and running costs. COGS is the estimated cost of the goods you
+              sold on Daraz; the business net profit is your Daraz income minus those costs.
+            </>
+          }
+        />
         {!coverageComplete && (
-          <Card className="mb-3 border-amber-200 bg-amber-50/70">
-            <CardBody className="flex items-start gap-2 py-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-relaxed text-amber-800">
-                <span>
-                  COGS incomplete: {formatNumber(uncoveredUnits)} of {formatNumber(coverage.deliveredUnits)} delivered
-                  units still need a product purchase cost. Estimated profit excludes those units.
-                </span>
-                <Link
-                  href={storeId ? `/products/missing-cogs?store=${encodeURIComponent(storeId)}` : '/products/missing-cogs'}
-                  className="font-medium text-amber-900 underline hover:no-underline"
-                >
-                  Review products
-                </Link>
-              </div>
-            </CardBody>
-          </Card>
+          <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-600">
+              <AlertTriangle className="h-4 w-4" />
+            </span>
+            <div className="flex flex-col gap-1.5 text-sm leading-relaxed text-amber-900">
+              <span>
+                <strong className="font-semibold">COGS incomplete:</strong> {formatNumber(uncoveredUnits)} of{' '}
+                {formatNumber(coverage.deliveredUnits)} delivered units still need a product purchase cost.{' '}
+                Estimated profit excludes those units.
+              </span>
+              <Link
+                href={storeId ? `/products/missing-cogs?store=${encodeURIComponent(storeId)}` : '/products/missing-cogs'}
+                className="inline-flex w-fit items-center gap-1 font-semibold text-amber-900 underline decoration-amber-400 underline-offset-2 hover:decoration-amber-700"
+              >
+                Review products
+              </Link>
+            </div>
+          </div>
         )}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <LinkStat
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
             href="/profit-loss"
             label="Estimated Daraz COGS"
             value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
@@ -175,7 +186,7 @@ export default async function DashboardPage({
             icon={<Receipt size={18} />}
             tone="negative"
           />
-          <LinkStat
+          <KpiCard
             href="/profit-loss"
             label="COGS Coverage"
             value={`${formatNumber(coverage.costedUnits)}/${formatNumber(coverage.deliveredUnits)}`}
@@ -183,7 +194,7 @@ export default async function DashboardPage({
             icon={<PieChart size={18} />}
             tone={coverageComplete ? 'positive' : 'warning'}
           />
-          <LinkStat
+          <KpiCard
             href="/profit-loss"
             label="Operating Expenses"
             value={`− ${formatMoney(fin.operatingExpenses)}`}
@@ -191,7 +202,7 @@ export default async function DashboardPage({
             icon={<Receipt size={18} />}
             tone="negative"
           />
-          <LinkStat
+          <KpiCard
             href="/profit-loss"
             label="Estimated Business Net Profit"
             value={formatMoney(fin.combinedNetProfit)}
@@ -203,17 +214,23 @@ export default async function DashboardPage({
       </section>
 
       {/* 3. Inventory */}
-      <section className="mb-4">
-        <h2 className="text-base font-semibold text-slate-900">Inventory</h2>
-        <SectionNote>
-          What you are holding in stock right now, valued at cost. Stock is tracked across all stores. Open{' '}
-          <Link href="/products" className="font-medium text-brand-600 hover:underline">
-            Products &amp; Inventory
-          </Link>{' '}
-          to manage it.
-        </SectionNote>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <LinkStat
+      <section className="mb-2">
+        <SectionHeader
+          icon={<Boxes size={18} />}
+          tone="default"
+          title="Inventory"
+          note={
+            <>
+              What you are holding in stock right now, valued at cost. Stock is tracked across all stores. Open{' '}
+              <Link href="/products" className="font-semibold text-brand-600 hover:underline">
+                Products &amp; Inventory
+              </Link>{' '}
+              to manage it.
+            </>
+          }
+        />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <KpiCard
             href="/products"
             label="Current Stock Value"
             value={formatMoney(inventory.stockValueAtCost)}
@@ -221,14 +238,14 @@ export default async function DashboardPage({
             icon={<Wallet size={18} />}
             tone="brand"
           />
-          <LinkStat
+          <KpiCard
             href="/products"
             label="Units in Stock"
             value={formatNumber(inventory.totalUnits)}
             hint={`${formatNumber(inventory.productCount)} active product(s)`}
             icon={<Package size={18} />}
           />
-          <LinkStat
+          <KpiCard
             href="/products"
             label="Low / Negative Stock"
             value={`${formatNumber(inventory.lowStockCount)}${inventory.negativeStockCount > 0 ? ` / ${formatNumber(inventory.negativeStockCount)}` : ''}`}
