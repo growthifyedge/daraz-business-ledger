@@ -321,6 +321,95 @@ export function estimateDarazCogs(
 }
 
 // ---------------------------------------------------------------------------
+// Missing-COGS breakdown (visibility only — no calculation change).
+//
+// Explains the coverage shortfall that estimateDarazCogs reports as
+// `deliveredUnits − costedUnits`: which (store, sellerSku) groups those uncovered
+// delivered units belong to, so the operator can record the missing purchase
+// cost. It iterates the SAME lines with the SAME guards, filter and settled-set
+// as estimateDarazCogs, so by construction Σ rows.deliveredUnitsMissingCost
+// equals that exact shortfall. Pure — no Prisma, no mutation. Product/store
+// display names are joined by the caller; this returns ids + counts only.
+// ---------------------------------------------------------------------------
+
+export interface MissingCogsRow {
+  /** Resolved ledger product id, or null when the seller SKU is unmapped. */
+  productId: string | null;
+  /** Store the delivered units came through (null = unattributed). */
+  storeId: string | null;
+  /** Daraz seller SKU (first-seen raw value for the normalised group). */
+  sellerSku: string;
+  /** Delivered units in this group with no purchase-cost coverage. */
+  deliveredUnitsMissingCost: number;
+  /** The product's current purchaseCost (0 for unmapped or uncosted products). */
+  currentPurchaseCost: number;
+  /** True when the seller SKU resolves to a product (uncosted), false when unmapped. */
+  mapped: boolean;
+}
+
+export interface MissingCogsReport {
+  rows: MissingCogsRow[];
+  /** Σ rows.deliveredUnitsMissingCost — equals deliveredUnits − costedUnits. */
+  totalMissingUnits: number;
+}
+
+/**
+ * Group the uncovered delivered units (unmapped OR mapped-but-uncosted) by
+ * (store, sellerSku). Mirror estimateDarazCogs exactly: same Delivered-only,
+ * in-scope and settled-income guards, same quantity normalisation, same
+ * (store, sku) → product → cost resolution. A group is emitted only when its
+ * units are NOT costed, so the report contains ONLY the products/SKUs causing
+ * the shortfall — inclusion is driven by delivered units, never by stock. Pure.
+ */
+export function listMissingCogsProducts(
+  lines: DeliveredOrderLine[],
+  mappings: SkuMappingRow[],
+  products: ProductCostRow[],
+  filter: IncomeRollupFilter = {},
+  settledOrderItemIds?: Set<string> | null
+): MissingCogsReport {
+  const skuToProduct = new Map(mappings.map((m) => [mapKey(m.storeId, m.sellerSku), m.productId]));
+  const costById = new Map(products.map((p) => [p.id, p.purchaseCost]));
+
+  const groups = new Map<string, MissingCogsRow>();
+  let totalMissingUnits = 0;
+
+  for (const l of lines) {
+    if (!isDeliveredExact(l.status)) continue; // Delivered-only
+    if (!orderInScope(l, filter)) continue;
+    if (settledOrderItemIds && !(l.orderItemId && settledOrderItemIds.has(l.orderItemId))) continue;
+    const qty = Number.isInteger(l.quantity) && l.quantity > 0 ? l.quantity : 1;
+
+    const key = mapKey(l.storeId, l.sellerSku);
+    const productId = skuToProduct.get(key);
+    const cost = productId ? costById.get(productId) ?? 0 : 0;
+    if (productId && cost > 0) continue; // costed ⇒ covered ⇒ not missing
+
+    const existing = groups.get(key);
+    if (existing) {
+      existing.deliveredUnitsMissingCost += qty;
+    } else {
+      groups.set(key, {
+        productId: productId ?? null,
+        storeId: l.storeId ?? null,
+        sellerSku: (l.sellerSku ?? '').trim(),
+        deliveredUnitsMissingCost: qty,
+        currentPurchaseCost: cost,
+        mapped: Boolean(productId),
+      });
+    }
+    totalMissingUnits += qty;
+  }
+
+  const rows = [...groups.values()].sort(
+    (a, b) =>
+      b.deliveredUnitsMissingCost - a.deliveredUnitsMissingCost ||
+      a.sellerSku.localeCompare(b.sellerSku)
+  );
+  return { rows, totalMissingUnits };
+}
+
+// ---------------------------------------------------------------------------
 // Unified "Estimated Business P&L" statement lines (presentation math only).
 //
 // Turns the shared Financials figures into the single statement the P&L screen

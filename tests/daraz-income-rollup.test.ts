@@ -5,6 +5,7 @@ import {
   rollUpDarazIncome,
   isReleased,
   estimateDarazCogs,
+  listMissingCogsProducts,
   isDeliveredExact,
   buildBusinessPnl,
   type IncomeLineForRollup,
@@ -264,6 +265,105 @@ test('cogs: profit reconciliation — combined = manual net + Daraz net − est.
   assert.equal(rollup.net, 697);
   assert.equal(cogs.estimatedCogs, 100);
   assert.equal(combined, 1097); // 500 + 697 − 100
+});
+
+// --- Missing-COGS breakdown (feeds the "Missing COGS costs" page) ------------
+
+// The invariant the page depends on: the total units shown MUST equal the
+// Dashboard warning's shortfall (deliveredUnits − costedUnits) for the same
+// inputs — computed here by the same pure code, so they can never diverge.
+test('missing-cogs: total equals estimateDarazCogs deliveredUnits − costedUnits', () => {
+  const lines = [
+    dline('SKU-A', 'delivered'), // mapped + cost → covered
+    dline('SKU-A', 'delivered'), // covered again
+    dline('SKU-B', 'delivered'), // mapped, cost 0 → missing (2 units)
+    dline('SKU-B', 'delivered', 'ashu', '2026-07-06', 2),
+    dline('SKU-X', 'delivered'), // unmapped → missing (1 unit)
+    dline('SKU-A', 'shipped'), // not delivered → ignored
+  ];
+  const est = estimateDarazCogs(lines, MAPPINGS, PRODUCTS);
+  const report = listMissingCogsProducts(lines, MAPPINGS, PRODUCTS);
+  assert.equal(report.totalMissingUnits, est.deliveredUnits - est.costedUnits);
+  assert.equal(report.totalMissingUnits, 4); // 3 × SKU-B + 1 × SKU-X
+});
+
+test('missing-cogs: groups by (store, sku); mapped-uncosted and unmapped rows carry the right fields', () => {
+  const lines = [
+    dline('SKU-B', 'delivered', 'ashu', '2026-07-05', 1),
+    dline('SKU-B', 'delivered', 'ashu', '2026-07-06', 2), // same (store, sku) → summed
+    dline('SKU-X', 'delivered', 'ge'), // unmapped
+  ];
+  const report = listMissingCogsProducts(lines, MAPPINGS, PRODUCTS);
+  assert.equal(report.rows.length, 2);
+  // Sorted by units desc → SKU-B (3) first.
+  const [b, x] = report.rows;
+  assert.deepEqual(b, {
+    productId: 'p-b',
+    storeId: 'ashu',
+    sellerSku: 'SKU-B',
+    deliveredUnitsMissingCost: 3,
+    currentPurchaseCost: 0,
+    mapped: true,
+  });
+  assert.deepEqual(x, {
+    productId: null,
+    storeId: 'ge',
+    sellerSku: 'SKU-X',
+    deliveredUnitsMissingCost: 1,
+    currentPurchaseCost: 0,
+    mapped: false,
+  });
+});
+
+test('missing-cogs: a costed product (cost > 0) never appears — inclusion is driven by delivered units, not stock', () => {
+  // SKU-A → p-a (cost 100). Even with many delivered units it is fully covered,
+  // so it is excluded regardless of any stock level (the helper has no stock input).
+  const report = listMissingCogsProducts(
+    [dline('SKU-A', 'delivered'), dline('SKU-A', 'delivered', 'ge')],
+    MAPPINGS,
+    PRODUCTS
+  );
+  assert.equal(report.rows.length, 0);
+  assert.equal(report.totalMissingUnits, 0);
+});
+
+test('missing-cogs: same store+date scope and settled-income filter as the COGS estimate', () => {
+  const lines = [
+    dline('SKU-B', 'delivered', 'ashu', '2026-07-05'), // in scope, settled
+    dline('SKU-B', 'delivered', 'ge', '2026-07-05'), // other store (scoped out at DB → excluded via filter)
+    dline('SKU-B', 'delivered', 'ashu', '2026-06-01'), // out of date range
+  ].map((l, i) => ({ ...l, orderItemId: `OL-${i}` }));
+  const settled = new Set(['OL-0']); // only the first line has settled income
+
+  const report = listMissingCogsProducts(
+    lines,
+    MAPPINGS,
+    PRODUCTS,
+    { storeId: 'ashu', from: new Date('2026-07-01'), to: new Date('2026-07-31T23:59:59.999Z') },
+    settled
+  );
+  const est = estimateDarazCogs(
+    lines,
+    MAPPINGS,
+    PRODUCTS,
+    { storeId: 'ashu', from: new Date('2026-07-01'), to: new Date('2026-07-31T23:59:59.999Z') },
+    settled
+  );
+  assert.equal(report.totalMissingUnits, est.deliveredUnits - est.costedUnits);
+  assert.equal(report.rows.length, 1);
+  assert.equal(report.rows[0].deliveredUnitsMissingCost, 1);
+});
+
+test('missing-cogs: empty input yields no rows and zero total; inputs are not mutated', () => {
+  const products = [{ id: 'p-b', purchaseCost: 0 }];
+  const mappings = [{ storeId: 'ashu', sellerSku: 'SKU-B', productId: 'p-b' }];
+  const lines = [dline('SKU-B', 'delivered')];
+  const snaps = [products, mappings, lines].map((x) => JSON.stringify(x));
+  const empty = listMissingCogsProducts([], mappings, products);
+  assert.deepEqual(empty, { rows: [], totalMissingUnits: 0 });
+  // Purity: a real run must not mutate its inputs.
+  listMissingCogsProducts(lines, mappings, products);
+  assert.deepEqual([products, mappings, lines].map((x) => JSON.stringify(x)), snaps);
 });
 
 // --- unified Business P&L statement (UI reconciliation) ----------------------
