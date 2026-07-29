@@ -22,7 +22,14 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { DashboardShell, type StoreOption } from './DashboardShell';
-import { KpiCard, SectionHeader } from './DashboardCards';
+import {
+  KpiCard,
+  SectionHeader,
+  NeedsAttention,
+  QuickActions,
+  type AttentionItem,
+  type QuickAction,
+} from './DashboardCards';
 
 export const metadata = { title: 'Dashboard' };
 // Always render fresh: financial figures must never be stale after an import,
@@ -74,7 +81,6 @@ export default async function DashboardPage({
 
   // Only honour a store id that actually exists; otherwise fall back to All Stores.
   const storeId = requestedStore && stores.some((s) => s.id === requestedStore) ? requestedStore : null;
-  const activeStore = stores.find((s) => s.id === storeId) ?? null;
 
   // Daraz income + inventory derived by the pure, tested helpers.
   const income = summariseDarazIncome(incomeRows as DashboardIncomeLine[], storeId);
@@ -85,23 +91,72 @@ export default async function DashboardPage({
   // Delivered units still missing a purchase cost — the ones the estimate leaves out.
   const uncoveredUnits = coverage.deliveredUnits - coverage.costedUnits;
 
-  const scopeLabel = activeStore ? activeStore.name : 'All Stores';
-
   const storeOptions: StoreOption[] = [
     { id: null, label: 'All Stores' },
     ...stores.map((s) => ({ id: s.id, label: s.name })),
   ];
 
+  // Where the COGS action points: the store-scoped Missing-COGS list when a
+  // store is selected, the unscoped list otherwise. (Same destination as before.)
+  const missingCogsHref = storeId
+    ? `/products/missing-cogs?store=${encodeURIComponent(storeId)}`
+    : '/products/missing-cogs';
+
+  // "Needs attention" is derived purely from the figures already shown on the
+  // page — nothing is fabricated. Each entry only appears when its real
+  // condition holds, and the panel hides entirely when the list is empty.
+  const attention: AttentionItem[] = [];
+  if (!coverageComplete) {
+    attention.push({
+      tone: 'warning',
+      icon: <PieChart size={18} />,
+      title: 'COGS needs attention',
+      description: `${formatNumber(uncoveredUnits)} of ${formatNumber(coverage.deliveredUnits)} delivered units still need a cost.`,
+      href: missingCogsHref,
+      actionLabel: 'Review products',
+    });
+  }
+  if (inventory.negativeStockCount > 0 || inventory.lowStockCount > 0) {
+    attention.push({
+      tone: inventory.negativeStockCount > 0 ? 'negative' : 'warning',
+      icon: <Boxes size={18} />,
+      title: inventory.negativeStockCount > 0 ? 'Low or negative stock' : 'Low stock',
+      description:
+        `${formatNumber(inventory.lowStockCount)} product(s) at or below minimum` +
+        (inventory.negativeStockCount > 0 ? `, ${formatNumber(inventory.negativeStockCount)} negative.` : '.'),
+      href: '/products',
+      actionLabel: 'Products & Inventory',
+    });
+  }
+  if (income.ready > 0) {
+    attention.push({
+      tone: 'brand',
+      icon: <Clock size={18} />,
+      title: 'Ready to release',
+      description: `${formatMoney(income.ready)} confirmed and ready to be paid out.`,
+      href: '/payouts',
+      actionLabel: 'Daraz Payouts',
+    });
+  }
+
+  // Shortcuts to the pages an owner reaches most often. Existing routes only;
+  // no mutations happen here — the destination pages own those.
+  const quickActions: QuickAction[] = [
+    { href: '/products', label: 'Products & Inventory', icon: <Package size={18} /> },
+    { href: '/purchases', label: 'Record Purchase', icon: <Receipt size={18} /> },
+    { href: '/payouts', label: 'Daraz Payouts', icon: <Banknote size={18} /> },
+    { href: '/profit-loss', label: 'Profit & Loss', icon: <TrendingUp size={18} /> },
+  ];
+
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Dashboard</h1>
-        <p className="mt-1.5 text-sm text-slate-500">
-          Business overview for <span className="font-semibold text-slate-700">{scopeLabel}</span> · all-time
-        </p>
-      </div>
-
       <DashboardShell storeId={storeId} options={storeOptions}>
+      {/* Triage first: anything that needs the owner's attention today. */}
+      <NeedsAttention items={attention} />
+
+      {/* Fast paths to the most-used pages. */}
+      <QuickActions actions={quickActions} />
+
       {/* 1. Daraz income */}
       <section className="mb-9">
         <SectionHeader
@@ -164,12 +219,11 @@ export default async function DashboardPage({
             </span>
             <div className="flex flex-col gap-1.5 text-sm leading-relaxed text-amber-900">
               <span>
-                <strong className="font-semibold">COGS incomplete:</strong> {formatNumber(uncoveredUnits)} of{' '}
-                {formatNumber(coverage.deliveredUnits)} delivered units still need a product purchase cost.{' '}
-                Estimated profit excludes those units.
+                <strong className="font-semibold">COGS needs attention</strong> — {formatNumber(uncoveredUnits)} of{' '}
+                {formatNumber(coverage.deliveredUnits)} delivered units still need a cost. Estimated profit excludes them.
               </span>
               <Link
-                href={storeId ? `/products/missing-cogs?store=${encodeURIComponent(storeId)}` : '/products/missing-cogs'}
+                href={missingCogsHref}
                 className="inline-flex w-fit items-center gap-1 font-semibold text-amber-900 underline decoration-amber-400 underline-offset-2 hover:decoration-amber-700"
               >
                 Review products

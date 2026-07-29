@@ -59,45 +59,74 @@ export function DashboardShell({
     });
   }
 
+  // Reflect the optimistically-selected scope in the hero label immediately, so
+  // the heading, the store chip and the figures all move together on a switch.
+  const activeLabel = options.find((o) => (o.id ?? null) === selected)?.label ?? 'All Stores';
+
   return (
     <div>
-      {/* Store filter — scopes every figure below. Default: All Stores. */}
-      <div className="mb-6 flex flex-wrap items-center gap-3">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Store</span>
-        <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-card">
-          {options.map((o) => {
-            const active = (o.id ?? null) === selected;
-            return (
-              <button
-                key={o.id ?? 'all'}
-                type="button"
-                onClick={() => switchStore(o.id)}
-                disabled={isPending}
-                aria-pressed={active}
-                aria-current={active ? 'true' : undefined}
-                className={
-                  active
-                    ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed'
-                    : 'rounded-full px-4 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-60'
-                }
-              >
-                {o.label}
-              </button>
-            );
-          })}
+      {/* Compact hero: page identity + scope on the left, store switcher on the
+          right. The store filter scopes every figure below. Default: All Stores. */}
+      <header className="mb-6 flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-[1.7rem]">Business overview</h1>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
+            <span className="inline-flex items-center rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-semibold text-brand-700">
+              {activeLabel}
+            </span>
+            <span aria-hidden="true" className="text-slate-300">
+              ·
+            </span>
+            <span className="text-slate-500">All-time</span>
+          </div>
         </div>
 
-        {isPending && (
+        <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+          <div
+            role="group"
+            aria-label="Filter by store"
+            className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-card"
+          >
+            {options.map((o) => {
+              const active = (o.id ?? null) === selected;
+              return (
+                <button
+                  key={o.id ?? 'all'}
+                  type="button"
+                  onClick={() => switchStore(o.id)}
+                  disabled={isPending}
+                  aria-pressed={active}
+                  aria-current={active ? 'true' : undefined}
+                  className={
+                    active
+                      ? 'rounded-full bg-brand-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed'
+                      : 'rounded-full px-4 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-60'
+                  }
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+
           <span
             role="status"
             aria-live="polite"
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-600"
+            className={
+              isPending
+                ? 'inline-flex items-center gap-1.5 text-sm font-medium text-brand-600'
+                : 'sr-only'
+            }
           >
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            Updating dashboard…
+            {isPending && (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Updating dashboard…
+              </>
+            )}
           </span>
-        )}
-      </div>
+        </div>
+      </header>
 
       {/* Server-rendered figures — kept visible but dimmed during a switch. */}
       <div

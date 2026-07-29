@@ -140,10 +140,9 @@ test('Dashboard COGS warning is actionable, quantified, and coverage-gated', () 
   );
   // The vague old copy is gone.
   assert.ok(!src.includes('Some delivered units have no cost yet'), 'drops the vague warning');
-  // New copy names the exact shortfall and what the estimate excludes.
-  assert.ok(src.includes('COGS incomplete:'), 'leads with a clear COGS-incomplete label');
-  assert.ok(src.includes('still need a product purchase cost'), 'explains what is missing');
-  assert.ok(src.includes('Estimated profit excludes those units'), 'states the estimate impact');
+  // New copy is concise and leads with a clear, plain-language label.
+  assert.ok(src.includes('COGS needs attention'), 'leads with a clear COGS-needs-attention label');
+  assert.ok(src.includes('still need a cost'), 'explains what is missing');
   // It quantifies X of Y using the coverage figures.
   assert.ok(src.includes('formatNumber(uncoveredUnits)'), 'shows the uncovered unit count');
   assert.ok(
@@ -155,6 +154,33 @@ test('Dashboard COGS warning is actionable, quantified, and coverage-gated', () 
   assert.ok(src.includes('href="/products"'), 'links the action to Products & Inventory');
   // Only rendered when coverage is below 100% (gated on !coverageComplete).
   assert.ok(src.includes('{!coverageComplete && ('), 'only shows below full coverage');
+});
+
+test('Dashboard "Needs attention" panel is gated on real dashboard data only', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'app/(dashboard)/dashboard/page.tsx'),
+    'utf8'
+  );
+  // The panel is rendered from a derived list, not hard-coded rows.
+  assert.ok(src.includes('<NeedsAttention items={attention} />'), 'renders the attention panel');
+  // Each entry is gated on a genuine condition already computed on the page.
+  assert.ok(src.includes('if (!coverageComplete) {'), 'COGS entry gated on coverage');
+  assert.ok(
+    src.includes('inventory.negativeStockCount > 0 || inventory.lowStockCount > 0'),
+    'stock entry gated on real stock counts'
+  );
+  assert.ok(src.includes('if (income.ready > 0) {'), 'ready-to-release entry gated on a real amount');
+});
+
+test('Dashboard "Quick actions" row links only to existing routes', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'app/(dashboard)/dashboard/page.tsx'),
+    'utf8'
+  );
+  assert.ok(src.includes('<QuickActions actions={quickActions} />'), 'renders the quick actions row');
+  for (const route of ["'/products'", "'/purchases'", "'/payouts'", "'/profit-loss'"]) {
+    assert.ok(src.includes(route), `quick actions link to ${route}`);
+  }
 });
 
 test('Dashboard page no longer renders Cash Flow, settlement or profit-share cards', () => {
