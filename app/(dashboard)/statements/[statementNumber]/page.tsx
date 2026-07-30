@@ -4,7 +4,8 @@ import { requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { summariseStatements } from '@/lib/daraz/statements';
 import { ALL_FEE_CATEGORIES, FEE_CATEGORY_LABEL } from '@/lib/daraz/fees';
-import { formatMoney } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney, redactStatementNumber, redactId } from '@/lib/presentation/redact';
 import { Card, CardBody, CardHeader, Table, THead, TH, TD, TRow, Badge } from '@/components/ui';
 import { ArrowLeft } from 'lucide-react';
 
@@ -18,6 +19,11 @@ export default async function StatementDetail({
   await requireUser(); // OWNER or ADMIN
   const { statementNumber: raw } = await params;
   const statementNumber = decodeURIComponent(raw);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive);
+  // statement number and every order identifier masked.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const lines = await prisma.darazIncomeLine.findMany({
     where: { statementNumber },
@@ -68,12 +74,14 @@ export default async function StatementDetail({
       </Link>
       <div className="mb-5">
         <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
-          Statement {summary.statementNumber}
+          {presentation.active
+            ? redactStatementNumber(summary.statementNumber, presentation)
+            : `Statement ${summary.statementNumber}`}
         </h1>
         <p className="mt-1 text-sm text-slate-500">
           {summary.statementPeriod || '—'} · {summary.releaseStatus || '—'} ·{' '}
           {summary.orderItemCount} order items · {summary.lineCount} lines · net{' '}
-          <strong>{formatMoney(summary.netPayout)}</strong>
+          <strong>{money(summary.netPayout)}</strong>
         </p>
       </div>
 
@@ -93,7 +101,7 @@ export default async function StatementDetail({
                 <TRow key={c}>
                   <TD>{FEE_CATEGORY_LABEL[c]}</TD>
                   <TD align="right" className={summary.byCategory[c] < 0 ? 'text-rose-600' : ''}>
-                    {formatMoney(summary.byCategory[c])}
+                    {money(summary.byCategory[c])}
                   </TD>
                 </TRow>
               ))}
@@ -101,7 +109,7 @@ export default async function StatementDetail({
             <tfoot>
               <TRow className="border-t-2 border-slate-200 font-semibold">
                 <TD>Net payout</TD>
-                <TD align="right">{formatMoney(summary.netPayout)}</TD>
+                <TD align="right">{money(summary.netPayout)}</TD>
               </TRow>
             </tfoot>
           </Table>
@@ -133,16 +141,16 @@ export default async function StatementDetail({
                 {lines.map((l) => {
                   return (
                     <TRow key={l.id}>
-                      <TD className="font-mono text-xs">{l.orderItemId}</TD>
-                      <TD className="text-xs text-slate-500">{l.orderNumber || '—'}</TD>
+                      <TD className="font-mono text-xs">{redactId(l.orderItemId, presentation, 'OIT')}</TD>
+                      <TD className="text-xs text-slate-500">{redactId(l.orderNumber, presentation, 'ORD') || '—'}</TD>
                       <TD className="max-w-[220px] truncate">{l.orderItem?.itemName || l.productName || '—'}</TD>
-                      <TD className="font-mono text-xs">{l.sellerSku || '—'}</TD>
+                      <TD className="font-mono text-xs">{redactId(l.sellerSku, presentation, 'SKU') || '—'}</TD>
                       <TD align="center">
                         {l.orderItem?.productId ? <Badge tone="green">Yes</Badge> : <Badge tone="amber">No</Badge>}
                       </TD>
-                      <TD align="right">{formatMoney(l.totalCredits)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(l.totalDeductions)}</TD>
-                      <TD align="right" className="font-medium">{formatMoney(l.netAmount)}</TD>
+                      <TD align="right">{money(l.totalCredits)}</TD>
+                      <TD align="right" className="text-rose-600">{money(l.totalDeductions)}</TD>
+                      <TD align="right" className="font-medium">{money(l.netAmount)}</TD>
                     </TRow>
                   );
                 })}

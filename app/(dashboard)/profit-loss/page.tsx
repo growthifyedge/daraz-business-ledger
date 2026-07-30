@@ -9,6 +9,9 @@ import { buildBusinessPnl } from '@/lib/daraz/income';
 import { round2 } from '@/lib/daraz/fees';
 import { PnlExport } from './PnlExport';
 import { formatMoney, formatNumber } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import type { PresentationContext } from '@/lib/presentation/core';
 import { PROFIT_SPLIT } from '@/lib/config';
 import { Info, TrendingUp, Users, Wallet } from 'lucide-react';
 
@@ -55,6 +58,12 @@ export default async function ProfitLossPage({
   const hasManual = pnl.hasManualSales;
   const combinedPositive = fin.combinedNetProfit >= 0;
 
+  // Presentation Safe View: exact figures are redacted server-side. `money` is
+  // an identity pass-through (formatMoney) when inactive, so normal mode is
+  // unchanged.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
+
   const d = fin.daraz;
   // Daraz component lines shown (signed) before Daraz Net. Grouped exactly as
   // requested; together they sum to d.net. "Other adjustments" (the OTHER fee
@@ -79,8 +88,10 @@ export default async function ProfitLossPage({
       : []),
   ];
 
-  // Flattened rows for CSV / PDF export — mirrors the unified statement.
-  const exportRows = [
+  // Flattened rows for CSV / PDF export — mirrors the unified statement. In
+  // Presentation Safe View the amounts are redacted to strings server-side, so
+  // the client export component never receives an exact figure.
+  const exportRowsRaw: { item: string; amount: number }[] = [
     ...darazLines.map((l) => ({ item: l.label, amount: l.amount })),
     { item: 'Daraz Net income', amount: fin.daraz.net },
     { item: 'Estimated Daraz COGS (Delivered)', amount: -fin.estimatedDarazCogs },
@@ -91,11 +102,14 @@ export default async function ProfitLossPage({
     { item: `Estimated Yahya Share (${yahyaPct}%)`, amount: fin.yahyaShare },
     { item: `Estimated Owner Share (${ownerPct}%)`, amount: fin.ownerShare },
   ];
+  const exportRows = presentation.active
+    ? exportRowsRaw.map((r) => ({ item: r.item, amount: money(r.amount) }))
+    : exportRowsRaw;
 
   return (
     <div>
       <PageHeader title="Business Profit & Loss" description={`Estimated statement for ${label}`}>
-        <PnlExport rows={exportRows} title="Estimated Business Profit & Loss" subtitle={label} />
+        <PnlExport rows={exportRows} title="Estimated Business Profit & Loss" subtitle={label} money={!presentation.active} />
       </PageHeader>
 
       <FilterBar stores={stores} />
@@ -116,16 +130,17 @@ export default async function ProfitLossPage({
             <dl className="divide-y divide-slate-100">
               {/* Daraz income components (signed) — sum to Daraz Net */}
               {darazLines.map((l) => (
-                <PnlLine key={l.label} label={l.label} amount={l.amount} signed />
+                <PnlLine ctx={presentation} key={l.label} label={l.label} amount={l.amount} signed />
               ))}
-              <PnlLine label="Daraz Net income" amount={fin.daraz.net} subtotal />
-              <PnlLine label="Estimated Daraz COGS (Delivered)" amount={fin.estimatedDarazCogs} deduction />
+              <PnlLine ctx={presentation} label="Daraz Net income" amount={fin.daraz.net} subtotal />
+              <PnlLine ctx={presentation} label="Estimated Daraz COGS (Delivered)" amount={fin.estimatedDarazCogs} deduction />
               {hasManual && (
-                <PnlLine label="Manual Sales margin (optional, separate channel)" amount={manualSalesMargin} signed />
+                <PnlLine ctx={presentation} label="Manual Sales margin (optional, separate channel)" amount={manualSalesMargin} signed />
               )}
-              <PnlLine label="Operating Expenses" amount={fin.operatingExpenses} deduction />
-              <PnlLine label="Accessories Consumed" amount={fin.accessoriesConsumed} deduction />
+              <PnlLine ctx={presentation} label="Operating Expenses" amount={fin.operatingExpenses} deduction />
+              <PnlLine ctx={presentation} label="Accessories Consumed" amount={fin.accessoriesConsumed} deduction />
               <PnlLine
+                ctx={presentation}
                 label="Estimated Business Net Profit"
                 amount={fin.combinedNetProfit}
                 total
@@ -148,7 +163,7 @@ export default async function ProfitLossPage({
               <p className="text-xs font-medium uppercase tracking-wide text-white/80">
                 Estimated Business Net Profit
               </p>
-              <p className="mt-1 text-3xl font-bold tabular-nums">{formatMoney(fin.combinedNetProfit)}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums">{money(fin.combinedNetProfit)}</p>
               <p className="mt-1 text-xs text-white/80">
                 Daraz net − est. COGS − operating costs · {label}
               </p>
@@ -157,20 +172,20 @@ export default async function ProfitLossPage({
 
           <StatCard
             label="Estimated Daraz COGS"
-            value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
+            value={`− ${money(fin.estimatedDarazCogs)}`}
             hint={`Delivered only · ${formatNumber(fin.darazCogs.costedUnits)}/${formatNumber(fin.darazCogs.deliveredUnits)} units costed (${fin.darazCogs.coveragePct}%)`}
             tone="negative"
           />
           <StatCard
             label={`Estimated Yahya Share (${yahyaPct}%)`}
-            value={formatMoney(fin.yahyaShare)}
+            value={money(fin.yahyaShare)}
             hint={`${yahyaPct}% of estimated business net`}
             icon={<Users size={18} />}
             tone="brand"
           />
           <StatCard
             label={`Estimated Owner Share (${ownerPct}%)`}
-            value={formatMoney(fin.ownerShare)}
+            value={money(fin.ownerShare)}
             hint={`${ownerPct}% of estimated business net`}
             icon={<Wallet size={18} />}
             tone="brand"
@@ -217,6 +232,7 @@ export default async function ProfitLossPage({
 function PnlLine({
   label,
   amount,
+  ctx,
   bold,
   deduction,
   signed,
@@ -226,6 +242,7 @@ function PnlLine({
 }: {
   label: string;
   amount: number;
+  ctx: PresentationContext;
   bold?: boolean;
   deduction?: boolean;
   signed?: boolean;
@@ -278,8 +295,9 @@ function PnlLine({
         {label}
       </dt>
       <dd className={amountClass}>
-        {deduction ? '− ' : ''}
-        {formatMoney(amount)}
+        {ctx.active
+          ? redactMoney(deduction ? -Math.abs(amount) : amount, ctx)
+          : `${deduction ? '− ' : ''}${formatMoney(amount)}`}
       </dd>
     </div>
   );

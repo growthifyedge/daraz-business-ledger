@@ -19,7 +19,10 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney, formatNumber, formatDate, humanize } from '@/lib/utils';
+import { formatNumber, formatDate, humanize } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import { redactExportRows } from '@/lib/presentation/viewmodels/exports';
 
 export const metadata = { title: 'Purchase Report' };
 export const dynamic = 'force-dynamic';
@@ -31,6 +34,11 @@ export default async function PurchasesReportPage({
 }) {
   const sp = await searchParams;
   const filter = parseFilter(sp);
+
+  // Presentation Safe View: money redacted (identity when inactive); bank
+  // references hidden and never exported.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const where: Prisma.PurchaseWhereInput = { deletedAt: null };
   if (filter.from || filter.to) {
@@ -80,7 +88,7 @@ export default async function PurchasesReportPage({
       p.paymentStatus === 'RECONCILIATION_PENDING'
         ? 'Payment reconciliation pending'
         : humanize(p.paymentStatus),
-    bankRef: p.bankReference ?? '',
+    bankRef: presentation.active ? '' : p.bankReference ?? '',
   }));
 
   const total = purchases.reduce((a, p) => a + p.totalCost, 0);
@@ -99,6 +107,9 @@ export default async function PurchasesReportPage({
     { key: 'bankRef', label: 'Bank Ref' },
   ];
 
+  // Exports use redacted data only (money columns become pre-redacted strings).
+  const exp = redactExportRows(columns, rows, presentation);
+
   return (
     <>
       <Link
@@ -113,16 +124,16 @@ export default async function PurchasesReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Total Purchased" value={formatMoney(total)} tone="brand" />
+        <StatCard label="Total Purchased" value={money(total)} tone="brand" />
         <StatCard
           label="Payable to Yahya"
-          value={formatMoney(payable)}
+          value={money(payable)}
           hint="Outstanding balance (unpaid + partially paid)"
           tone={payable > 0 ? 'warning' : 'default'}
         />
         <StatCard
           label="Payment reconciliation pending"
-          value={formatMoney(reconciliationPending)}
+          value={money(reconciliationPending)}
           tone={reconciliationPending > 0 ? 'warning' : 'default'}
         />
         <StatCard label="Purchase Records" value={formatNumber(count)} />
@@ -139,8 +150,8 @@ export default async function PurchasesReportPage({
                 title="Purchase Report"
                 filename="purchase-report"
                 subtitle={rangeLabel(filter)}
-                columns={columns}
-                rows={rows}
+                columns={exp.columns}
+                rows={exp.rows}
               />
             </div>
             <Table>
@@ -165,16 +176,16 @@ export default async function PurchasesReportPage({
                     </TD>
                     <TD className="text-slate-500">{p.store?.name ?? '—'}</TD>
                     <TD align="right">{formatNumber(p.quantity)}</TD>
-                    <TD align="right">{formatMoney(p.unitCost)}</TD>
+                    <TD align="right">{money(p.unitCost)}</TD>
                     <TD align="right" className="font-medium">
-                      {formatMoney(p.totalCost)}
+                      {money(p.totalCost)}
                     </TD>
                     <TD align="center">
                       <Badge tone={p.paymentStatus === 'PAID' ? 'green' : 'amber'}>
                         {humanize(p.paymentStatus)}
                       </Badge>
                     </TD>
-                    <TD className="text-slate-500">{p.bankReference ?? '—'}</TD>
+                    <TD className="text-slate-500">{presentation.active ? '—' : p.bankReference ?? '—'}</TD>
                   </TRow>
                 ))}
               </tbody>

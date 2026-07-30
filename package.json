@@ -7,7 +7,7 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test tests/returns.test.ts tests/daraz-import.test.ts tests/daraz-store-aware.test.ts tests/daraz-income-rollup.test.ts tests/purchase-payments.test.ts tests/purchase-bulk.test.ts tests/yahya-payments.test.ts tests/purchase-sku-mapping.test.ts tests/daraz-payouts.test.ts tests/cashflow.test.ts tests/daraz-income-header-alias.test.ts tests/daraz-reprocess.test.ts tests/daraz-reconcile.test.ts tests/api-error.test.ts tests/dashboard.test.ts tests/presentation.test.ts tests/presentation-redact.test.ts tests/presentation-viewmodels.test.ts",
+    "test": "tsx --test tests/returns.test.ts tests/daraz-import.test.ts tests/daraz-store-aware.test.ts tests/daraz-income-rollup.test.ts tests/purchase-payments.test.ts tests/purchase-bulk.test.ts tests/yahya-payments.test.ts tests/purchase-sku-mapping.test.ts tests/daraz-payouts.test.ts tests/cashflow.test.ts tests/daraz-income-header-alias.test.ts tests/daraz-reprocess.test.ts tests/daraz-reconcile.test.ts tests/api-error.test.ts tests/dashboard.test.ts tests/presentation.test.ts tests/presentation-redact.test.ts tests/presentation-viewmodels.test.ts tests/presentation-3b.test.ts",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",

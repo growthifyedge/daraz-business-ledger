@@ -17,7 +17,10 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney, formatNumber, formatDate, humanize } from '@/lib/utils';
+import { formatNumber, formatDate, humanize } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import { redactExportRows } from '@/lib/presentation/viewmodels/exports';
 
 export const metadata = { title: 'Expense Report' };
 export const dynamic = 'force-dynamic';
@@ -29,6 +32,10 @@ export default async function ExpensesReportPage({
 }) {
   const sp = await searchParams;
   const filter = parseFilter(sp);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive).
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const where: Prisma.ExpenseWhereInput = { deletedAt: null };
   if (filter.from || filter.to) {
@@ -99,6 +106,9 @@ export default async function ExpensesReportPage({
     { key: 'method', label: 'Method' },
   ];
 
+  // Exports use redacted data only.
+  const exp = redactExportRows(columns, rows, presentation);
+
   return (
     <>
       <Link
@@ -113,12 +123,12 @@ export default async function ExpensesReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard label="Total Expenses" value={formatMoney(total)} tone="negative" />
+        <StatCard label="Total Expenses" value={money(total)} tone="negative" />
         <StatCard label="Records" value={formatNumber(count)} />
         <StatCard
           label="Top Category"
           value={topCategory}
-          hint={topAmount >= 0 ? formatMoney(topAmount) : undefined}
+          hint={topAmount >= 0 ? money(topAmount) : undefined}
         />
       </div>
 
@@ -133,8 +143,8 @@ export default async function ExpensesReportPage({
                 title="Expense Report"
                 filename="expense-report"
                 subtitle={rangeLabel(filter)}
-                columns={columns}
-                rows={rows}
+                columns={exp.columns}
+                rows={exp.rows}
               />
             </div>
             <Table>
@@ -155,7 +165,7 @@ export default async function ExpensesReportPage({
                     <TD className="font-medium text-slate-800">{humanize(e.category)}</TD>
                     <TD className="text-slate-500">{e.store?.name ?? '—'}</TD>
                     <TD align="right" className="font-medium">
-                      {formatMoney(e.amount)}
+                      {money(e.amount)}
                     </TD>
                     <TD className="text-slate-500">{e.paidBy ?? '—'}</TD>
                     <TD className="text-slate-500">{e.paymentMethod ?? '—'}</TD>

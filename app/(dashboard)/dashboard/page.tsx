@@ -9,7 +9,9 @@ import {
 import { prisma } from '@/lib/prisma';
 import type { SearchParams } from '@/lib/filters';
 import type { Prisma } from '@prisma/client';
-import { formatMoney, formatNumber } from '@/lib/utils';
+import { formatNumber } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
 import {
   Wallet,
   Banknote,
@@ -91,6 +93,12 @@ export default async function DashboardPage({
   // Delivered units still missing a purchase cost — the ones the estimate leaves out.
   const uncoveredUnits = coverage.deliveredUnits - coverage.costedUnits;
 
+  // Presentation Safe View: exact figures are redacted server-side. `money` is
+  // an identity pass-through (formatMoney) when the mode is inactive, so normal
+  // mode is byte-for-byte unchanged.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
+
   const storeOptions: StoreOption[] = [
     { id: null, label: 'All Stores' },
     ...stores.map((s) => ({ id: s.id, label: s.name })),
@@ -133,7 +141,7 @@ export default async function DashboardPage({
       tone: 'brand',
       icon: <Clock size={18} />,
       title: 'Ready to release',
-      description: `${formatMoney(income.ready)} confirmed and ready to be paid out.`,
+      description: `${money(income.ready)} confirmed and ready to be paid out.`,
       href: '/payouts',
       actionLabel: 'Daraz Payouts',
     });
@@ -175,7 +183,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/payouts"
             label="Daraz Net Income"
-            value={formatMoney(income.net)}
+            value={money(income.net)}
             hint="Imported Daraz statements"
             icon={<Wallet size={18} />}
             tone="brand"
@@ -183,7 +191,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/payouts"
             label="Released Payouts"
-            value={formatMoney(income.released)}
+            value={money(income.released)}
             hint="Already paid out"
             icon={<Banknote size={18} />}
             tone="positive"
@@ -191,7 +199,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/payouts"
             label="Ready to Release"
-            value={formatMoney(income.ready)}
+            value={money(income.ready)}
             hint="Confirmed, not yet paid"
             icon={<Clock size={18} />}
             tone="warning"
@@ -235,7 +243,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/profit-loss"
             label="Estimated Daraz COGS"
-            value={`− ${formatMoney(fin.estimatedDarazCogs)}`}
+            value={`− ${money(fin.estimatedDarazCogs)}`}
             hint="Cost of goods sold (estimated)"
             icon={<Receipt size={18} />}
             tone="negative"
@@ -251,7 +259,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/profit-loss"
             label="Operating Expenses"
-            value={`− ${formatMoney(fin.operatingExpenses)}`}
+            value={`− ${money(fin.operatingExpenses)}`}
             hint="Packaging, transport, misc."
             icon={<Receipt size={18} />}
             tone="negative"
@@ -259,7 +267,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/profit-loss"
             label="Estimated Business Net Profit"
-            value={formatMoney(fin.combinedNetProfit)}
+            value={money(fin.combinedNetProfit)}
             hint="Daraz income − COGS − running costs"
             icon={<PieChart size={18} />}
             tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
@@ -287,7 +295,7 @@ export default async function DashboardPage({
           <KpiCard
             href="/products"
             label="Current Stock Value"
-            value={formatMoney(inventory.stockValueAtCost)}
+            value={money(inventory.stockValueAtCost)}
             hint="At purchase cost"
             icon={<Wallet size={18} />}
             tone="brand"

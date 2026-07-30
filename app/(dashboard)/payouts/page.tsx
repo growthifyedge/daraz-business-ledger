@@ -9,7 +9,9 @@ import {
   type PayoutLineInput,
   type PayoutRow,
 } from '@/lib/daraz/payouts';
-import { formatMoney, formatNumber } from '@/lib/utils';
+import { formatNumber } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney, redactStatementNumber } from '@/lib/presentation/redact';
 import {
   Card,
   CardBody,
@@ -42,6 +44,12 @@ export default async function PayoutsPage({
   const sp = await searchParams;
   const filter = parseFilter(sp);
   const label = rangeLabel(filter);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive),
+  // statement numbers masked, and the per-statement drill-down suppressed so no
+  // real statement number leaks via the URL.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const [stores, incomeRows] = await Promise.all([
     prisma.store.findMany({
@@ -102,19 +110,19 @@ export default async function PayoutsPage({
       <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Ready to Release"
-          value={formatMoney(totals.readyToReleaseTotal)}
+          value={money(totals.readyToReleaseTotal)}
           hint="Expected income (not yet in Cash Flow)"
           tone="warning"
         />
         <StatCard
           label="Released"
-          value={formatMoney(totals.releasedTotal)}
+          value={money(totals.releasedTotal)}
           hint="Counted in Cash Flow"
           tone="positive"
         />
         <StatCard
           label="Total imported payouts"
-          value={formatMoney(totals.totalPayouts)}
+          value={money(totals.totalPayouts)}
           hint="Net across all statuses"
         />
         <StatCard
@@ -135,7 +143,7 @@ export default async function PayoutsPage({
         <Card>
           <CardHeader
             title={`${formatNumber(rows.length)} payout${rows.length === 1 ? '' : 's'}`}
-            subtitle={`Net ${formatMoney(totals.totalPayouts)} · ${label}`}
+            subtitle={`Net ${money(totals.totalPayouts)} · ${label}`}
           />
           <CardBody className="p-0">
             <div className="overflow-x-auto">
@@ -157,28 +165,34 @@ export default async function PayoutsPage({
                   {rows.map((r) => (
                     <TRow key={`${r.storeName}::${r.statementNumber}`}>
                       <TD className="whitespace-nowrap text-slate-600">{r.storeName || '—'}</TD>
-                      <TD className="font-medium text-slate-800">{r.statementNumber}</TD>
+                      <TD className="font-medium text-slate-800">
+                        {redactStatementNumber(r.statementNumber, presentation)}
+                      </TD>
                       <TD className="whitespace-nowrap text-xs text-slate-500">
                         {r.statementPeriod || '—'}
                       </TD>
                       <TD>
                         <StatusBadge row={r} />
                       </TD>
-                      <TD align="right">{formatMoney(r.productRevenue)}</TD>
-                      <TD align="right">{formatMoney(r.buyerShippingCredit)}</TD>
+                      <TD align="right">{money(r.productRevenue)}</TD>
+                      <TD align="right">{money(r.buyerShippingCredit)}</TD>
                       <TD align="right" className="text-rose-600">
-                        {formatMoney(r.totalDeductions)}
+                        {money(r.totalDeductions)}
                       </TD>
                       <TD align="right" className="font-semibold">
-                        {formatMoney(r.netPayout)}
+                        {money(r.netPayout)}
                       </TD>
                       <TD align="right">
-                        <Link
-                          href={`/statements/${encodeURIComponent(r.statementNumber)}`}
-                          className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700 hover:underline"
-                        >
-                          View <ArrowUpRight className="h-3.5 w-3.5" />
-                        </Link>
+                        {presentation.active ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <Link
+                            href={`/statements/${encodeURIComponent(r.statementNumber)}`}
+                            className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700 hover:underline"
+                          >
+                            View <ArrowUpRight className="h-3.5 w-3.5" />
+                          </Link>
+                        )}
                       </TD>
                     </TRow>
                   ))}
@@ -187,9 +201,9 @@ export default async function PayoutsPage({
                   <TRow className="border-t-2 border-slate-200 font-semibold">
                     <TD colSpan={6}>All payouts</TD>
                     <TD align="right" className="text-rose-600">
-                      {formatMoney(rows.reduce((a, r) => a + r.totalDeductions, 0))}
+                      {money(rows.reduce((a, r) => a + r.totalDeductions, 0))}
                     </TD>
-                    <TD align="right">{formatMoney(totals.totalPayouts)}</TD>
+                    <TD align="right">{money(totals.totalPayouts)}</TD>
                     <TD />
                   </TRow>
                 </tfoot>

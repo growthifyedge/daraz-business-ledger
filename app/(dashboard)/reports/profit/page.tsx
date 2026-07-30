@@ -16,7 +16,9 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import { redactExportRows } from '@/lib/presentation/viewmodels/exports';
 
 export const metadata = { title: 'Profit Report' };
 export const dynamic = 'force-dynamic';
@@ -28,6 +30,10 @@ export default async function ProfitReportPage({
 }) {
   const sp = await searchParams;
   const filter = parseFilter(sp);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive).
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const [stores, fin] = await Promise.all([
     prisma.store.findMany({
@@ -59,6 +65,13 @@ export default async function ProfitReportPage({
     { item: 'Estimated Owner Share (50%)', amount: fin.ownerShare },
   ];
 
+  // Exports use redacted data only.
+  const exportColumns = [
+    { key: 'item', label: 'Item' },
+    { key: 'amount', label: 'Amount', money: true },
+  ];
+  const exp = redactExportRows(exportColumns, rows, presentation);
+
   return (
     <>
       <Link
@@ -76,16 +89,16 @@ export default async function ProfitReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-        <StatCard label="Daraz (net)" value={formatMoney(fin.daraz.net)} tone="brand" />
-        <StatCard label="Est. Daraz COGS" value={`− ${formatMoney(fin.estimatedDarazCogs)}`} tone="negative" />
+        <StatCard label="Daraz (net)" value={money(fin.daraz.net)} tone="brand" />
+        <StatCard label="Est. Daraz COGS" value={`− ${money(fin.estimatedDarazCogs)}`} tone="negative" />
         <StatCard
           label="Est. Business Net Profit"
-          value={formatMoney(fin.combinedNetProfit)}
+          value={money(fin.combinedNetProfit)}
           tone={fin.combinedNetProfit >= 0 ? 'positive' : 'negative'}
         />
-        <StatCard label="Est. Yahya 50%" value={formatMoney(fin.yahyaShare)} />
-        <StatCard label="Est. Owner 50%" value={formatMoney(fin.ownerShare)} />
-        <StatCard label="Manual Sales (gross)" value={formatMoney(fin.grossSales)} hint="Separate channel" />
+        <StatCard label="Est. Yahya 50%" value={money(fin.yahyaShare)} />
+        <StatCard label="Est. Owner 50%" value={money(fin.ownerShare)} />
+        <StatCard label="Manual Sales (gross)" value={money(fin.grossSales)} hint="Separate channel" />
       </div>
 
       <Card>
@@ -96,11 +109,8 @@ export default async function ProfitReportPage({
               title="Profit & Loss Report"
               filename="profit-report"
               subtitle={rangeLabel(filter)}
-              columns={[
-                { key: 'item', label: 'Item' },
-                { key: 'amount', label: 'Amount', money: true },
-              ]}
-              rows={rows}
+              columns={exp.columns}
+              rows={exp.rows}
             />
           </div>
           <Table>
@@ -115,7 +125,7 @@ export default async function ProfitReportPage({
                 <TRow key={r.item}>
                   <TD className="font-medium text-slate-800">{r.item}</TD>
                   <TD align="right" className={r.amount < 0 ? 'text-rose-600' : undefined}>
-                    {formatMoney(r.amount)}
+                    {money(r.amount)}
                   </TD>
                 </TRow>
               ))}

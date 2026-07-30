@@ -17,7 +17,10 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney, formatNumber, formatDate } from '@/lib/utils';
+import { formatNumber, formatDate } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import { redactExportRows } from '@/lib/presentation/viewmodels/exports';
 
 export const metadata = { title: 'Sales Report' };
 export const dynamic = 'force-dynamic';
@@ -29,6 +32,10 @@ export default async function SalesReportPage({
 }) {
   const sp = await searchParams;
   const filter = parseFilter(sp);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive).
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const where: Prisma.SaleWhereInput = { deletedAt: null };
   if (filter.from || filter.to) {
@@ -98,6 +105,9 @@ export default async function SalesReportPage({
     { key: 'net', label: 'Net', money: true },
   ];
 
+  // Exports use redacted data only.
+  const exp = redactExportRows(columns, rows, presentation);
+
   return (
     <>
       <Link
@@ -112,8 +122,8 @@ export default async function SalesReportPage({
       <FilterBar stores={stores} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard label="Gross Sales" value={formatMoney(grossTotal)} tone="brand" />
-        <StatCard label="Net Received" value={formatMoney(netTotal)} tone="positive" />
+        <StatCard label="Gross Sales" value={money(grossTotal)} tone="brand" />
+        <StatCard label="Net Received" value={money(netTotal)} tone="positive" />
         <StatCard label="Units Sold" value={formatNumber(units)} />
       </div>
 
@@ -128,8 +138,8 @@ export default async function SalesReportPage({
                 title="Sales Report"
                 filename="sales-report"
                 subtitle={rangeLabel(filter)}
-                columns={columns}
-                rows={rows}
+                columns={exp.columns}
+                rows={exp.rows}
               />
             </div>
             <Table>
@@ -156,13 +166,13 @@ export default async function SalesReportPage({
                     </TD>
                     <TD className="text-slate-500">{s.store?.name ?? '—'}</TD>
                     <TD align="right">{formatNumber(s.quantitySold)}</TD>
-                    <TD align="right">{formatMoney(s.grossAmount)}</TD>
-                    <TD align="right">{formatMoney(s.commission)}</TD>
-                    <TD align="right">{formatMoney(s.vat)}</TD>
-                    <TD align="right">{formatMoney(s.otherCharges)}</TD>
-                    <TD align="right">{formatMoney(s.returnsRefunds)}</TD>
+                    <TD align="right">{money(s.grossAmount)}</TD>
+                    <TD align="right">{money(s.commission)}</TD>
+                    <TD align="right">{money(s.vat)}</TD>
+                    <TD align="right">{money(s.otherCharges)}</TD>
+                    <TD align="right">{money(s.returnsRefunds)}</TD>
                     <TD align="right" className="font-medium">
-                      {formatMoney(s.netAmount)}
+                      {money(s.netAmount)}
                     </TD>
                   </TRow>
                 ))}
