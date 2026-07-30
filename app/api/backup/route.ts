@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
+import { isPresentationActive } from '@/lib/presentation/context';
 
 // Owner-only full-data export (JSON backup of every table).
 // Password hashes are intentionally excluded — this is a data backup, not an
@@ -13,6 +14,13 @@ export async function GET() {
   }
   if (user.role !== 'OWNER') {
     return NextResponse.json({ error: 'Owner access required' }, { status: 403 });
+  }
+  // Blocked while Presentation Safe View is active — never stream raw data.
+  if (await isPresentationActive()) {
+    return NextResponse.json(
+      { error: 'Unavailable while Presentation Safe View is active.' },
+      { status: 403 }
+    );
   }
 
   const [

@@ -6,6 +6,7 @@ import { getSession, type SessionUser } from '@/lib/auth';
 import { validateUpload, UploadError, LIMITS } from '@/lib/daraz/xlsx';
 import { parseUpload, type ParsedUpload } from '@/lib/daraz/persist';
 import { IncomeParseError } from '@/lib/daraz/parse';
+import { isPresentationActive } from '@/lib/presentation/context';
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -13,11 +14,16 @@ export class HttpError extends Error {
   }
 }
 
-/** Owner-only gate for the import routes; returns the session or throws 401/403. */
+/** Owner-only gate for the import routes; returns the session or throws 401/403.
+ *  Also blocked entirely while Presentation Safe View is active (independent of
+ *  middleware), so no Daraz upload can be previewed, committed or reprocessed. */
 export async function requireOwnerApi(): Promise<SessionUser> {
   const user = await getSession();
   if (!user) throw new HttpError(401, 'Sign in required.');
   if (user.role !== 'OWNER') throw new HttpError(403, 'Owner access required.');
+  if (await isPresentationActive()) {
+    throw new HttpError(403, 'Unavailable while Presentation Safe View is active.');
+  }
   return user;
 }
 

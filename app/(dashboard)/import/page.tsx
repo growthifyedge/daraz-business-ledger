@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { requireOwner } from '@/lib/auth';
 import { ImportManager } from './ImportManager';
+import { redirectIfPresentationActive } from '@/lib/presentation/guard';
 
 export const metadata = { title: 'Daraz Import' };
 export const dynamic = 'force-dynamic';
@@ -9,6 +10,8 @@ export default async function ImportPage() {
   // Owner only. Phase 4 accepts a sanitized, identifier-only Orders dataset —
   // no customer/PII is handled here.
   await requireOwner();
+  // Blocked while Presentation Safe View is active — independent of middleware.
+  await redirectIfPresentationActive();
 
   const [products, stores, committedBatches] = await Promise.all([
     prisma.product.findMany({

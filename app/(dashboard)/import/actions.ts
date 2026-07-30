@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { requireOwner } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { normalizeSellerSku } from '@/lib/daraz/fees';
+import { assertModuleOutsidePresentation } from '@/lib/presentation/guard';
 
 export interface MappingResult {
   ok: boolean;
@@ -29,6 +30,8 @@ export async function saveDarazSkuMapping(
   storeId: string
 ): Promise<MappingResult> {
   const user = await requireOwner();
+  // Daraz Import is blocked while Presentation Safe View is active.
+  await assertModuleOutsidePresentation('Daraz Import');
   const sku = normalizeSellerSku(sellerSku);
   const pid = String(productId ?? '').trim();
   const sid = String(storeId ?? '').trim();

@@ -28,6 +28,9 @@ import { cn } from '@/lib/utils';
 import { APP_NAME } from '@/lib/config';
 import { logoutAction } from '@/app/(auth)/login/actions';
 import type { SessionUser } from '@/lib/auth';
+import type { PresentationContext } from '@/lib/presentation/core';
+import { PresentationBanner } from './PresentationBanner';
+import { PresentationEnableMenu } from './PresentationEnableMenu';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -52,13 +55,22 @@ const OWNER_NAV = [
 
 export function AppShell({
   user,
+  presentation,
+  presentationAvailable = false,
   children,
 }: {
   user: SessionUser;
+  presentation?: PresentationContext;
+  presentationAvailable?: boolean;
   children: React.ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const psv: PresentationContext = presentation ?? { active: false, profile: null };
+  // Offer the enable control only to the OWNER, only when the feature is
+  // available (kill switch on) and not already active.
+  const canEnablePresentation =
+    presentationAvailable && user.role === 'OWNER' && !psv.active;
 
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + '/');
@@ -127,7 +139,11 @@ export function AppShell({
   );
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex min-h-screen flex-col bg-slate-50">
+      {/* Global, non-dismissible presentation banner (renders only when active). */}
+      <PresentationBanner presentation={psv} />
+
+      <div className="flex min-h-0 flex-1">
       {/* Desktop sidebar */}
       <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
         {brand}
@@ -160,17 +176,24 @@ export function AppShell({
           </button>
 
           <div className="ml-auto">
-            <UserMenu user={user} />
+            <UserMenu user={user} canEnablePresentation={canEnablePresentation} />
           </div>
         </header>
 
         <main className="flex-1 p-4 sm:p-6">{children}</main>
       </div>
+      </div>
     </div>
   );
 }
 
-function UserMenu({ user }: { user: SessionUser }) {
+function UserMenu({
+  user,
+  canEnablePresentation = false,
+}: {
+  user: SessionUser;
+  canEnablePresentation?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -200,6 +223,7 @@ function UserMenu({ user }: { user: SessionUser }) {
               <p className="text-sm font-medium text-slate-800">{user.name}</p>
               <p className="truncate text-xs text-slate-400">{user.email}</p>
             </div>
+            {canEnablePresentation && <PresentationEnableMenu />}
             <form action={logoutAction}>
               <button
                 type="submit"
