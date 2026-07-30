@@ -3,6 +3,12 @@ import type { Prisma } from '@prisma/client';
 import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
 import { ReturnsManager } from './ReturnsManager';
+import { getPresentationContext } from '@/lib/presentation/context';
+import {
+  toReturnsPresentationRows,
+  toReturnsPresentationTotals,
+} from '@/lib/presentation/viewmodels/returns';
+import { ReturnsPresentationView } from './ReturnsPresentationView';
 
 export const metadata = { title: 'Returns & Refunds' };
 export const dynamic = 'force-dynamic';
@@ -36,6 +42,90 @@ export default async function ReturnsPage({
 
   // Totals always describe the live (non-deleted) set, regardless of the view.
   const liveWhere: Prisma.ReturnWhereInput = { deletedAt: null };
+
+  // ── Presentation Safe View: read-only, fully-redacted branch. ──────────────
+  // The normal path below is left completely unchanged; this only runs when the
+  // mode is active, and it never fetches buyerName or notes.
+  const presentation = await getPresentationContext();
+  if (presentation.active) {
+    const [pReturns, pCount, totalAgg, sellerAgg, platformAgg, pendingAgg] = await Promise.all([
+      prisma.return.findMany({
+        where,
+        orderBy: { returnDate: 'desc' },
+        skip,
+        take,
+        select: {
+          id: true,
+          returnDate: true,
+          orderNumber: true,
+          returnOrderId: true,
+          trackingNumber: true,
+          quantity: true,
+          refundAmount: true,
+          chargedTo: true,
+          refundStatus: true,
+          inventoryStatus: true,
+          reason: true,
+          product: { select: { name: true } },
+          store: { select: { name: true } },
+        },
+      }),
+      prisma.return.count({ where }),
+      prisma.return.aggregate({ where: liveWhere, _sum: { refundAmount: true } }),
+      prisma.return.aggregate({
+        where: { ...liveWhere, refundStatus: 'COMPLETED', chargedTo: 'SELLER' },
+        _sum: { refundAmount: true },
+      }),
+      prisma.return.aggregate({
+        where: { ...liveWhere, refundStatus: 'COMPLETED', chargedTo: 'PLATFORM' },
+        _sum: { refundAmount: true },
+      }),
+      prisma.return.aggregate({
+        where: { ...liveWhere, refundStatus: 'PENDING' },
+        _sum: { refundAmount: true },
+      }),
+    ]);
+
+    const rows = toReturnsPresentationRows(
+      pReturns.map((r) => ({
+        id: r.id,
+        returnDate: r.returnDate,
+        productName: r.product?.name ?? null,
+        storeName: r.store?.name ?? null,
+        orderNumber: r.orderNumber,
+        returnOrderId: r.returnOrderId,
+        trackingNumber: r.trackingNumber,
+        quantity: r.quantity,
+        refundAmount: r.refundAmount,
+        chargedTo: r.chargedTo,
+        refundStatus: r.refundStatus,
+        inventoryStatus: r.inventoryStatus,
+        reason: r.reason,
+      })),
+      presentation
+    );
+    const totals = toReturnsPresentationTotals(
+      {
+        refund: totalAgg._sum.refundAmount ?? 0,
+        sellerLoss: sellerAgg._sum.refundAmount ?? 0,
+        platformCovered: platformAgg._sum.refundAmount ?? 0,
+        pending: pendingAgg._sum.refundAmount ?? 0,
+        count: pCount,
+      },
+      presentation
+    );
+
+    return (
+      <ReturnsPresentationView
+        rows={rows}
+        totals={totals}
+        page={page}
+        pageSize={pageSize}
+        total={pCount}
+      />
+    );
+  }
+  // ── End Presentation Safe View branch. Normal path continues unchanged. ────
 
   const [returns, count, totalAgg, sellerAgg, platformAgg, pendingAgg, products, stores, sales, deletedCount] =
     await Promise.all([

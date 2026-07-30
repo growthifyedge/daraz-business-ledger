@@ -4,6 +4,12 @@ import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
 import { getYahyaCashSummary } from '@/lib/calculations';
 import { PurchasesManager } from './PurchasesManager';
+import { getPresentationContext } from '@/lib/presentation/context';
+import {
+  toPurchasesPresentationRows,
+  toPurchasesPresentationTotals,
+} from '@/lib/presentation/viewmodels/purchases';
+import { PurchasesPresentationView } from './PurchasesPresentationView';
 
 export const metadata = { title: 'Purchases' };
 export const dynamic = 'force-dynamic';
@@ -20,6 +26,68 @@ export default async function PurchasesPage({
     deletedAt: null,
     ...searchFilter(q, ['product.name', 'bankReference', 'notes', 'purchasedBy']),
   };
+
+  // ── Presentation Safe View: read-only, fully-redacted branch. ──────────────
+  // The normal path below is unchanged; this never fetches purchasedBy, bank
+  // references, invoice URLs or notes, and shows no payment-history detail.
+  const presentation = await getPresentationContext();
+  if (presentation.active) {
+    const [pPurchases, pCount, pTotalAgg, pYahya] = await Promise.all([
+      prisma.purchase.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        skip,
+        take,
+        select: {
+          id: true,
+          date: true,
+          quantity: true,
+          unitCost: true,
+          totalCost: true,
+          paymentStatus: true,
+          product: { select: { name: true } },
+          store: { select: { name: true } },
+        },
+      }),
+      prisma.purchase.count({ where }),
+      prisma.purchase.aggregate({ where, _sum: { totalCost: true } }),
+      getYahyaCashSummary(),
+    ]);
+
+    const rows = toPurchasesPresentationRows(
+      pPurchases.map((p) => ({
+        id: p.id,
+        date: p.date,
+        productName: p.product.name,
+        storeName: p.store?.name ?? null,
+        quantity: p.quantity,
+        unitCost: p.unitCost,
+        totalCost: p.totalCost,
+        paymentStatus: p.paymentStatus,
+      })),
+      presentation
+    );
+    const totals = toPurchasesPresentationTotals(
+      {
+        total: pTotalAgg._sum?.totalCost ?? 0,
+        payable: pYahya.payableToYahya,
+        paid: pYahya.actualPaidToYahya,
+        count: pCount,
+      },
+      presentation
+    );
+
+    return (
+      <PurchasesPresentationView
+        rows={rows}
+        totals={totals}
+        page={page}
+        pageSize={pageSize}
+        total={pCount}
+      />
+    );
+  }
+  // ── End Presentation Safe View branch. Normal path continues unchanged. ────
 
   const [purchases, count, totalAgg, yahya, paymentsRaw, products, stores] = await Promise.all([
     prisma.purchase.findMany({
