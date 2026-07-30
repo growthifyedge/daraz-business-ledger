@@ -18,7 +18,10 @@ import {
   TD,
   TRow,
 } from '@/components/ui';
-import { formatMoney, formatNumber } from '@/lib/utils';
+import { formatNumber } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
+import { redactExportRows } from '@/lib/presentation/viewmodels/exports';
 
 export const metadata = { title: 'Inventory Report' };
 export const dynamic = 'force-dynamic';
@@ -30,6 +33,10 @@ export default async function InventoryReportPage({
 }) {
   const sp = await searchParams;
   const filter = parseFilter(sp);
+
+  // Presentation Safe View: money redacted server-side (identity when inactive).
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   // Inventory is a snapshot — the date range does not apply. Store filter is
   // applied via the ProductStore join (products available in the store).
@@ -89,6 +96,9 @@ export default async function InventoryReportPage({
     { key: 'returned', label: 'Returned' },
   ];
 
+  // Exports use redacted data only.
+  const exp = redactExportRows(columns, rows, presentation);
+
   return (
     <>
       <Link
@@ -105,7 +115,7 @@ export default async function InventoryReportPage({
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard
           label="Total Stock Value (at cost)"
-          value={formatMoney(stockValue.stockValueAtCost)}
+          value={money(stockValue.stockValueAtCost)}
           tone="brand"
         />
         <StatCard label="Total Units" value={formatNumber(stockValue.totalUnits)} />
@@ -122,8 +132,8 @@ export default async function InventoryReportPage({
               <ExportButtons
                 title="Inventory Report"
                 filename="inventory-report"
-                columns={columns}
-                rows={rows}
+                columns={exp.columns}
+                rows={exp.rows}
               />
             </div>
             <Table>
@@ -150,10 +160,10 @@ export default async function InventoryReportPage({
                     <TD className="text-slate-500">{p.sku}</TD>
                     <TD align="right">{formatNumber(p.currentStock)}</TD>
                     <TD align="right">{formatNumber(p.minStockLevel)}</TD>
-                    <TD align="right">{formatMoney(p.purchaseCost)}</TD>
-                    <TD align="right">{formatMoney(p.sellingPrice)}</TD>
+                    <TD align="right">{money(p.purchaseCost)}</TD>
+                    <TD align="right">{money(p.sellingPrice)}</TD>
                     <TD align="right" className="font-medium">
-                      {formatMoney(p.currentStock * p.purchaseCost)}
+                      {money(p.currentStock * p.purchaseCost)}
                     </TD>
                     <TD align="right">{formatNumber(p.damagedStock)}</TD>
                     <TD align="right">{formatNumber(p.lostStock)}</TD>

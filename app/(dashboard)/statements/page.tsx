@@ -2,7 +2,9 @@ import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { summariseStatements } from '@/lib/daraz/statements';
-import { formatMoney, formatNumber, cn } from '@/lib/utils';
+import { formatNumber, cn } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney, redactStatementNumber } from '@/lib/presentation/redact';
 import { Card, CardBody, CardHeader, Table, THead, TH, TD, TRow, EmptyState } from '@/components/ui';
 import { FileText } from 'lucide-react';
 
@@ -15,6 +17,11 @@ export default async function StatementsPage({
   searchParams: Promise<{ store?: string }>;
 }) {
   await requireUser(); // OWNER or ADMIN only
+
+  // Presentation Safe View: money redacted server-side (identity when inactive);
+  // statement numbers masked and their drill-down suppressed.
+  const presentation = await getPresentationContext();
+  const money = (n: number) => redactMoney(n, presentation);
 
   const sp = await searchParams;
   const requestedStore = typeof sp.store === 'string' ? sp.store : '';
@@ -103,7 +110,7 @@ export default async function StatementsPage({
         <Card>
           <CardHeader
             title={`${statements.length} statement(s)${activeStore ? ` · ${activeStore.name}` : ''}`}
-            subtitle={`${formatNumber(grand.orders)} order items · ${formatNumber(grand.lines)} statement lines · net ${formatMoney(grand.net)}`}
+            subtitle={`${formatNumber(grand.orders)} order items · ${formatNumber(grand.lines)} statement lines · net ${money(grand.net)}`}
           />
           <CardBody className="p-0">
             <div className="overflow-x-auto">
@@ -137,30 +144,36 @@ export default async function StatementsPage({
                   {statements.map((s) => (
                     <TRow key={s.statementNumber}>
                       <TD className="font-medium">
-                        <Link href={`/statements/${encodeURIComponent(s.statementNumber)}`} className="text-brand-700 hover:underline">
-                          {s.statementNumber}
-                        </Link>
+                        {presentation.active ? (
+                          <span className="text-slate-700">
+                            {redactStatementNumber(s.statementNumber, presentation)}
+                          </span>
+                        ) : (
+                          <Link href={`/statements/${encodeURIComponent(s.statementNumber)}`} className="text-brand-700 hover:underline">
+                            {s.statementNumber}
+                          </Link>
+                        )}
                       </TD>
                       <TD className="whitespace-nowrap text-xs text-slate-600">{s.storeName || '—'}</TD>
                       <TD className="whitespace-nowrap text-xs text-slate-500">{s.statementPeriod || '—'}</TD>
                       <TD className="text-xs">{s.releaseStatus || '—'}</TD>
                       <TD align="right">{s.orderItemCount}</TD>
-                      <TD align="right">{formatMoney(s.productRevenue)}</TD>
-                      <TD align="right">{formatMoney(s.buyerShippingCredit)}</TD>
-                      <TD align="right">{formatMoney(s.totalCredits)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.commission)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.paymentFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.shippingFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.handlingFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.freeShippingMaxFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.coinsFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.voucherFee)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.incomeTaxWht)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.salesTaxWht)}</TD>
-                      <TD align="right" className={s.refunds < 0 ? 'text-rose-600' : ''}>{formatMoney(s.refunds)}</TD>
-                      <TD align="right">{formatMoney(s.reversals)}</TD>
-                      <TD align="right" className="text-rose-600">{formatMoney(s.totalDeductions)}</TD>
-                      <TD align="right" className="font-semibold">{formatMoney(s.netPayout)}</TD>
+                      <TD align="right">{money(s.productRevenue)}</TD>
+                      <TD align="right">{money(s.buyerShippingCredit)}</TD>
+                      <TD align="right">{money(s.totalCredits)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.commission)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.paymentFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.shippingFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.handlingFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.freeShippingMaxFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.coinsFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.voucherFee)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.incomeTaxWht)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.salesTaxWht)}</TD>
+                      <TD align="right" className={s.refunds < 0 ? 'text-rose-600' : ''}>{money(s.refunds)}</TD>
+                      <TD align="right">{money(s.reversals)}</TD>
+                      <TD align="right" className="text-rose-600">{money(s.totalDeductions)}</TD>
+                      <TD align="right" className="font-semibold">{money(s.netPayout)}</TD>
                     </TRow>
                   ))}
                 </tbody>
@@ -169,10 +182,10 @@ export default async function StatementsPage({
                     <TD colSpan={4}>{activeStore ? activeStore.name : 'All statements'}</TD>
                     <TD align="right">{formatNumber(grand.orders)}</TD>
                     <TD colSpan={2} />
-                    <TD align="right">{formatMoney(grand.credits)}</TD>
+                    <TD align="right">{money(grand.credits)}</TD>
                     <TD colSpan={10} />
-                    <TD align="right" className="text-rose-600">{formatMoney(grand.deductions)}</TD>
-                    <TD align="right">{formatMoney(grand.net)}</TD>
+                    <TD align="right" className="text-rose-600">{money(grand.deductions)}</TD>
+                    <TD align="right">{money(grand.net)}</TD>
                   </TRow>
                 </tfoot>
               </Table>
