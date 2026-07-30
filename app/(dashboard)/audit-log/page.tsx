@@ -2,6 +2,7 @@ import { requireOwner } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { AuditLogView } from './AuditLogView';
 import type { Prisma } from '@prisma/client';
+import { redirectIfPresentationActive } from '@/lib/presentation/guard';
 
 export const metadata = { title: 'Audit Log' };
 export const dynamic = 'force-dynamic';
@@ -15,6 +16,8 @@ export default async function AuditLogPage({
 }) {
   // Owner-only. Redirects non-owners (also enforced in middleware).
   await requireOwner();
+  // Blocked while Presentation Safe View is active — independent of middleware.
+  await redirectIfPresentationActive();
 
   const sp = await searchParams;
   const currentModule = sp.module ?? '';

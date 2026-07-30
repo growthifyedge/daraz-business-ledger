@@ -1,6 +1,7 @@
 import { requireOwner } from '@/lib/auth';
 import { Card, CardBody, CardHeader, PageHeader } from '@/components/ui';
 import { Download, ShieldCheck, Info } from 'lucide-react';
+import { redirectIfPresentationActive } from '@/lib/presentation/guard';
 
 export const metadata = { title: 'Backup & Export' };
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,8 @@ export const dynamic = 'force-dynamic';
 export default async function BackupPage() {
   // Owner-only (middleware also guards owner areas; this is defence in depth).
   await requireOwner();
+  // Blocked while Presentation Safe View is active — independent of middleware.
+  await redirectIfPresentationActive();
 
   return (
     <div>
