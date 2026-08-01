@@ -11,11 +11,13 @@ import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
 import { DemoReturnDetail } from './DemoReturnDetail';
+import { DemoRecordReturn } from './DemoRecordReturn';
 import { DemoBadge } from '@/components/demo/DemoBadge';
 import type {
   ReturnsPresentationRow,
   ReturnsPresentationTotals,
 } from '@/lib/presentation/viewmodels/returns';
+import type { PresentationProfile } from '@/lib/presentation/core';
 
 const EXPORT_COLUMNS = [
   { key: 'returnDate', label: 'Date' },
@@ -38,6 +40,7 @@ export function ReturnsPresentationView({
   pageSize,
   total,
   illustrative = false,
+  profile = null,
 }: {
   rows: ReturnsPresentationRow[];
   totals: ReturnsPresentationTotals;
@@ -46,6 +49,8 @@ export function ReturnsPresentationView({
   total: number;
   /** True when `rows` are illustrative samples (real protected dataset empty). */
   illustrative?: boolean;
+  /** Active redaction profile, so demo-recorded money follows it. */
+  profile?: PresentationProfile | null;
 }) {
   return (
     <div>
@@ -133,6 +138,8 @@ export function ReturnsPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
+
+      <DemoRecordReturn profile={profile} />
     </div>
   );
 }

@@ -20,11 +20,13 @@ import {
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoRecordExpense } from './DemoRecordExpense';
 import { formatNumber } from '@/lib/utils';
 import type {
   ExpensesPresentationRow,
   ExpensesPresentationTotals,
 } from '@/lib/presentation/viewmodels/expenses';
+import type { PresentationProfile } from '@/lib/presentation/core';
 
 const EXPORT_COLUMNS = [
   { key: 'date', label: 'Date' },
@@ -40,12 +42,15 @@ export function ExpensesPresentationView({
   page,
   pageSize,
   total,
+  profile = null,
 }: {
   rows: ExpensesPresentationRow[];
   totals: ExpensesPresentationTotals;
   page: number;
   pageSize: number;
   total: number;
+  /** Active redaction profile, so demo-recorded money follows it. */
+  profile?: PresentationProfile | null;
 }) {
   return (
     <div>
@@ -111,6 +116,8 @@ export function ExpensesPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
+
+      <DemoRecordExpense profile={profile} />
     </div>
   );
 }

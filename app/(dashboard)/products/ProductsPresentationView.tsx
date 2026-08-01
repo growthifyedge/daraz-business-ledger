@@ -9,6 +9,7 @@ import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
 import { DemoProductPreview } from './DemoProductPreview';
+import { DemoProductActions } from './DemoProductActions';
 import { formatNumber } from '@/lib/utils';
 import type { ProductsPresentationRow } from '@/lib/presentation/viewmodels/products';
 
@@ -115,6 +116,8 @@ export function ProductsPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
+
+      <DemoProductActions productNames={rows.map((r) => r.name)} />
     </div>
   );
 }
