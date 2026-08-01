@@ -6,6 +6,7 @@ import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { str, num } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 
 const CATEGORIES = [
   'PRODUCT_COST',
@@ -29,6 +30,8 @@ export async function saveExpense(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   const dateStr = str(formData.get('date'));
@@ -103,6 +106,7 @@ export async function saveExpense(
 }
 
 export async function deleteExpense(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;

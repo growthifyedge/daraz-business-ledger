@@ -9,6 +9,7 @@ import { recordMovement } from '@/lib/stock';
 import { str, num, int } from '@/lib/utils';
 import { PRODUCT_CATEGORY } from '@/lib/config';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 import {
   normalizeSellerSku,
   shouldMapDaraz,
@@ -70,6 +71,8 @@ export async function savePurchase(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   const dateStr = str(formData.get('date'));
@@ -258,6 +261,8 @@ export async function saveNewProductPurchase(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const dateStr = str(formData.get('date'));
   const purchasedBy = str(formData.get('purchasedBy')) ?? 'Yahya';
@@ -367,6 +372,7 @@ export async function saveNewProductPurchase(
 }
 
 export async function deletePurchase(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;

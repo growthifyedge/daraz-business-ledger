@@ -1,6 +1,7 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
+import { getPresentationContext } from '@/lib/presentation/context';
 import {
   Card,
   CardBody,
@@ -25,6 +26,14 @@ export default async function ProductDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+
+  // Presentation Safe View: the product drill-down surfaces exact stock value and
+  // raw stock-movement notes / operator names, so it is blocked entirely while
+  // active. The redacted Products list (/products) remains available. Inactive
+  // mode is unchanged.
+  const presentation = await getPresentationContext();
+  if (presentation.active) redirect('/products?psv=blocked');
+
   const product = await prisma.product.findFirst({
     where: { id, deletedAt: null },
     include: {

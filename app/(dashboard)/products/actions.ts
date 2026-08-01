@@ -8,11 +8,14 @@ import { recordMovement, INSUFFICIENT_STOCK } from '@/lib/stock';
 import { str, num, int } from '@/lib/utils';
 import { PRODUCT_CATEGORY } from '@/lib/config';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 
 export async function saveProduct(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   const name = str(formData.get('name'));
@@ -115,6 +118,7 @@ export async function saveProduct(
 }
 
 export async function deleteProduct(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;
@@ -137,6 +141,8 @@ export async function adjustStock(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const productId = str(formData.get('productId'));
   const type = str(formData.get('type')) as

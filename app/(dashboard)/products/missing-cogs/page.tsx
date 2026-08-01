@@ -16,7 +16,9 @@ import {
   Badge,
   EmptyState,
 } from '@/components/ui';
-import { formatMoney, formatNumber } from '@/lib/utils';
+import { formatNumber } from '@/lib/utils';
+import { getPresentationContext } from '@/lib/presentation/context';
+import { redactMoney } from '@/lib/presentation/redact';
 import { ArrowLeft, AlertTriangle } from 'lucide-react';
 
 export const metadata = { title: 'Missing COGS costs' };
@@ -36,6 +38,11 @@ export default async function MissingCogsPage({
 }) {
   const sp = await searchParams;
   const requestedStore = one(sp.store) ?? null;
+
+  // Presentation Safe View: this Dashboard drill-down stays available (counts are
+  // safe operational context) but the per-product purchase cost is shown only as
+  // a band/status — never an exact figure. Identity when inactive.
+  const presentation = await getPresentationContext();
 
   // Mirror getFinancials' COGS inputs EXACTLY so this page's total equals the
   // Dashboard warning: delivered order items are store-scoped at the DB (empty
@@ -173,7 +180,7 @@ export default async function MissingCogsPage({
                     <TD align="right" className="font-medium text-amber-700">
                       {formatNumber(r.deliveredUnitsMissingCost)}
                     </TD>
-                    <TD align="right">{formatMoney(r.currentPurchaseCost)}</TD>
+                    <TD align="right">{redactMoney(r.currentPurchaseCost, presentation)}</TD>
                     <TD align="right">
                       <Link
                         href={`/products?q=${encodeURIComponent(r.mapped ? r.productSku ?? r.sellerSku : r.sellerSku)}`}

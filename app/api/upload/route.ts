@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getSupabaseAdmin, STORAGE_BUCKET } from '@/lib/supabase';
+import { isPresentationActive } from '@/lib/presentation/context';
+import { PRESENTATION_READONLY_MESSAGE } from '@/lib/presentation/core';
 
 // Handles invoice / receipt uploads (images or PDFs) to Supabase Storage.
 export async function POST(req: NextRequest) {
   const user = await getSession();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  // No uploads while Presentation Safe View is active — fail closed server-side,
+  // independent of middleware. Never write files or return a storage URL.
+  if (await isPresentationActive()) {
+    return NextResponse.json({ error: PRESENTATION_READONLY_MESSAGE }, { status: 403 });
   }
 
   const supabase = getSupabaseAdmin();

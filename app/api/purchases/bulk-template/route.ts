@@ -4,6 +4,8 @@
 import ExcelJS from 'exceljs';
 import { getSession } from '@/lib/auth';
 import { BULK_PURCHASE_HEADERS, BULK_PURCHASE_EXAMPLE_ROW } from '@/lib/purchaseBulk';
+import { isPresentationActive } from '@/lib/presentation/context';
+import { PRESENTATION_READONLY_MESSAGE } from '@/lib/presentation/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +13,11 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   const user = await getSession();
   if (!user) return new Response('Sign in required.', { status: 401 });
+  // The bulk-import flow is unavailable while Presentation Safe View is active,
+  // so the template download is blocked too (belt-and-braces with the actions).
+  if (await isPresentationActive()) {
+    return new Response(PRESENTATION_READONLY_MESSAGE, { status: 403 });
+  }
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Purchases');
