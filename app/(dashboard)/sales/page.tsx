@@ -3,6 +3,12 @@ import type { Prisma } from '@prisma/client';
 import type { SearchParams } from '@/lib/filters';
 import { parsePagination, buildPageMeta, searchFilter } from '@/lib/pagination';
 import { SalesManager } from './SalesManager';
+import { getPresentationContext } from '@/lib/presentation/context';
+import {
+  toSalesPresentationRows,
+  toSalesPresentationTotals,
+} from '@/lib/presentation/viewmodels/sales';
+import { SalesPresentationView } from './SalesPresentationView';
 
 export const metadata = { title: 'Manual Sales' };
 export const dynamic = 'force-dynamic';
@@ -19,6 +25,67 @@ export default async function SalesPage({
     deletedAt: null,
     ...searchFilter(q, ['product.name', 'notes']),
   };
+
+  // ── Presentation Safe View: read-only, fully-redacted branch. ──────────────
+  // The normal path below is unchanged. This never fetches internal notes or any
+  // buyer/creator identifier; every monetary figure (gross, net, costs, profit)
+  // is shown only as a band/status; and no mutation controls are rendered.
+  const presentation = await getPresentationContext();
+  if (presentation.active) {
+    const [pSales, pCount, pAgg] = await Promise.all([
+      prisma.sale.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        skip,
+        take,
+        select: {
+          id: true,
+          date: true,
+          quantitySold: true,
+          grossAmount: true,
+          netAmount: true,
+          product: { select: { name: true } },
+          store: { select: { name: true } },
+        },
+      }),
+      prisma.sale.count({ where }),
+      prisma.sale.aggregate({
+        where,
+        _sum: { grossAmount: true, netAmount: true, quantitySold: true },
+      }),
+    ]);
+
+    const rows = toSalesPresentationRows(
+      pSales.map((s) => ({
+        id: s.id,
+        date: s.date.toISOString(),
+        storeName: s.store?.name ?? null,
+        productName: s.product.name,
+        quantitySold: s.quantitySold,
+        grossAmount: s.grossAmount,
+        netAmount: s.netAmount,
+      })),
+      presentation
+    );
+    const totals = toSalesPresentationTotals(
+      {
+        gross: pAgg._sum.grossAmount ?? 0,
+        net: pAgg._sum.netAmount ?? 0,
+        units: pAgg._sum.quantitySold ?? 0,
+      },
+      presentation
+    );
+
+    return (
+      <SalesPresentationView
+        rows={rows}
+        totals={totals}
+        page={page}
+        pageSize={pageSize}
+        total={pCount}
+      />
+    );
+  }
 
   const [sales, count, agg, products, stores] = await Promise.all([
     prisma.sale.findMany({
