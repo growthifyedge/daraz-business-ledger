@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useActionState, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { EyeOff, Lock, Clock, LogOut } from 'lucide-react';
+import { EyeOff, Lock, Clock, LogOut, Loader2 } from 'lucide-react';
 import { disablePresentationSafeView } from '@/lib/presentation/actions';
+import { initialFormState } from '@/lib/formState';
 import { PRESENTATION_PROFILE_LABEL, type PresentationContext } from '@/lib/presentation/core';
+import { PresentationOverlay } from './PresentationOverlay';
 
 function timeLeft(expiresAt?: string): string {
   if (!expiresAt) return '';
@@ -27,6 +29,12 @@ function timeLeft(expiresAt?: string): string {
  */
 export function PresentationBanner({ presentation }: { presentation: PresentationContext }) {
   const [left, setLeft] = useState(() => timeLeft(presentation.expiresAt));
+  // Exit is also not instant (clears the cookie, audits, re-renders normal mode),
+  // so it gets the same immediate pending state + protective overlay as enter.
+  const [exitState, exitAction, exiting] = useActionState(
+    disablePresentationSafeView,
+    initialFormState
+  );
 
   useEffect(() => {
     if (!presentation.active) return;
@@ -74,6 +82,12 @@ export function PresentationBanner({ presentation }: { presentation: Presentatio
         </>
       )}
 
+      {exitState.error && !exiting && (
+        <span role="alert" className="hidden text-xs font-medium text-emerald-50 sm:inline">
+          {exitState.error}
+        </span>
+      )}
+
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <Link
           href="/presentation"
@@ -81,16 +95,29 @@ export function PresentationBanner({ presentation }: { presentation: Presentatio
         >
           Readiness
         </Link>
-        <form action={disablePresentationSafeView}>
+        <form action={exitAction}>
           <button
             type="submit"
-            className="inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 focus-visible:ring-offset-emerald-600"
+            disabled={exiting}
+            aria-busy={exiting}
+            className="inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 focus-visible:ring-offset-emerald-600 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-            Exit
+            {exiting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            {exiting ? 'Exiting…' : 'Exit'}
           </button>
         </form>
       </div>
+
+      {exiting && (
+        <PresentationOverlay
+          title="Returning to normal view…"
+          subtitle="Preparing normal view"
+        />
+      )}
     </div>
   );
 }
