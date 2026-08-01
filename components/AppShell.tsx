@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -32,6 +32,7 @@ import type { SessionUser } from '@/lib/auth';
 import type { PresentationContext } from '@/lib/presentation/core';
 import { PresentationBanner } from './PresentationBanner';
 import { PresentationEnableMenu } from './PresentationEnableMenu';
+import { PresentationNotice } from './PresentationNotice';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -168,7 +169,14 @@ export function AppShell({
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white/90 px-4 backdrop-blur">
+        <header
+          className={cn(
+            'sticky z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white/90 px-4 backdrop-blur',
+            // Pin the header just below the sticky presentation banner so both
+            // stay visible; normal mode (no banner) keeps the header at the top.
+            psv.active ? 'top-10' : 'top-0'
+          )}
+        >
           <button
             onClick={() => setMobileOpen(true)}
             className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 lg:hidden"
@@ -182,6 +190,9 @@ export function AppShell({
           </div>
         </header>
 
+        <Suspense fallback={null}>
+          <PresentationNotice />
+        </Suspense>
         <main className="flex-1 p-4 sm:p-6">{children}</main>
       </div>
       </div>
