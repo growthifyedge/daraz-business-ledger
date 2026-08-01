@@ -10,6 +10,8 @@ import { Card, CardBody, PageHeader, StatCard, Table, THead, TH, TD, TRow, Empty
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoReturnDetail } from './DemoReturnDetail';
+import { DemoBadge } from '@/components/demo/DemoBadge';
 import type {
   ReturnsPresentationRow,
   ReturnsPresentationTotals,
@@ -35,12 +37,15 @@ export function ReturnsPresentationView({
   page,
   pageSize,
   total,
+  illustrative = false,
 }: {
   rows: ReturnsPresentationRow[];
   totals: ReturnsPresentationTotals;
   page: number;
   pageSize: number;
   total: number;
+  /** True when `rows` are illustrative samples (real protected dataset empty). */
+  illustrative?: boolean;
 }) {
   return (
     <div>
@@ -63,11 +68,18 @@ export function ReturnsPresentationView({
             <ExportButtons
               columns={EXPORT_COLUMNS}
               rows={rows as unknown as Record<string, unknown>[]}
-              filename="returns-presentation"
+              filename="returns-demo"
               title="Returns & Refunds"
-              subtitle="Presentation Safe View — confidential values hidden"
+              subtitle="Demo simulation — no live records changed. Confidential values hidden."
             />
           </div>
+
+          {illustrative && rows.length > 0 && (
+            <div className="mb-4 flex items-center gap-2">
+              <span className="text-sm text-slate-500">Illustrative sample returns for demonstration.</span>
+              <DemoBadge />
+            </div>
+          )}
 
           {rows.length === 0 ? (
             <EmptyState
@@ -91,6 +103,7 @@ export function ReturnsPresentationView({
                   <TH>Charged To</TH>
                   <TH>Refund Status</TH>
                   <TH>Inventory</TH>
+                  <TH align="right">Detail</TH>
                 </TRow>
               </THead>
               <tbody>
@@ -108,6 +121,9 @@ export function ReturnsPresentationView({
                     <TD>{r.chargedTo}</TD>
                     <TD>{r.refundStatus}</TD>
                     <TD>{r.inventoryStatus}</TD>
+                    <TD align="right">
+                      <DemoReturnDetail row={r} />
+                    </TD>
                   </TRow>
                 ))}
               </tbody>
