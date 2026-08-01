@@ -12,6 +12,7 @@ import type { Prisma } from '@prisma/client';
 import { formatNumber } from '@/lib/utils';
 import { getPresentationContext } from '@/lib/presentation/context';
 import { redactMoney } from '@/lib/presentation/redact';
+import { DemoImport } from '../import/DemoImport';
 import {
   Wallet,
   Banknote,
@@ -164,6 +165,9 @@ export default async function DashboardPage({
 
       {/* Fast paths to the most-used pages. */}
       <QuickActions actions={quickActions} />
+
+      {/* Demo-only entry point for the Daraz import walkthrough (active mode). */}
+      {presentation.active && <DemoImport />}
 
       {/* 1. Daraz income */}
       <section className="mb-9">

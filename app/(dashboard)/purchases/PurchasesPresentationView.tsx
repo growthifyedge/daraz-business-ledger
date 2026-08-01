@@ -8,6 +8,7 @@ import { Card, CardBody, PageHeader, StatCard, Table, THead, TH, TD, TRow, Empty
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoRecordPurchase } from './DemoRecordPurchase';
 import type {
   PurchasesPresentationRow,
   PurchasesPresentationTotals,
@@ -54,13 +55,16 @@ export function PurchasesPresentationView({
         <CardBody>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <SearchBar placeholder="Search purchases…" />
-            <ExportButtons
-              columns={EXPORT_COLUMNS}
-              rows={rows as unknown as Record<string, unknown>[]}
-              filename="purchases-presentation"
-              title="Purchases"
-              subtitle="Presentation Safe View — confidential values hidden"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <DemoRecordPurchase />
+              <ExportButtons
+                columns={EXPORT_COLUMNS}
+                rows={rows as unknown as Record<string, unknown>[]}
+                filename="purchases-demo"
+                title="Purchases"
+                subtitle="Demo simulation — no live records changed. Confidential values hidden."
+              />
+            </div>
           </div>
 
           {rows.length === 0 ? (

@@ -8,6 +8,7 @@ import { Card, CardBody, PageHeader, StatCard, Badge, Table, THead, TH, TD, TRow
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoProductPreview } from './DemoProductPreview';
 import { formatNumber } from '@/lib/utils';
 import type { ProductsPresentationRow } from '@/lib/presentation/viewmodels/products';
 
@@ -56,9 +57,9 @@ export function ProductsPresentationView({
             <ExportButtons
               columns={EXPORT_COLUMNS}
               rows={rows as unknown as Record<string, unknown>[]}
-              filename="products-presentation"
+              filename="products-demo"
               title="Products & Inventory"
-              subtitle="Presentation Safe View — confidential values hidden"
+              subtitle="Demo simulation — no live records changed. Confidential values hidden."
             />
           </div>
 
@@ -81,6 +82,7 @@ export function ProductsPresentationView({
                   <TH align="right">Selling Price</TH>
                   <TH align="right">Stock Value</TH>
                   <TH>Status</TH>
+                  <TH align="right">Actions</TH>
                 </TRow>
               </THead>
               <tbody>
@@ -100,6 +102,9 @@ export function ProductsPresentationView({
                       ) : (
                         <Badge tone="slate">Inactive</Badge>
                       )}
+                    </TD>
+                    <TD align="right">
+                      <DemoProductPreview row={p} />
                     </TD>
                   </TRow>
                 ))}

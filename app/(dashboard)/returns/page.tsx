@@ -9,6 +9,7 @@ import {
   toReturnsPresentationTotals,
 } from '@/lib/presentation/viewmodels/returns';
 import { ReturnsPresentationView } from './ReturnsPresentationView';
+import { DEMO_RETURN_SOURCE } from '@/lib/presentation/demo/samples';
 
 export const metadata = { title: 'Returns & Refunds' };
 export const dynamic = 'force-dynamic';
@@ -115,13 +116,22 @@ export default async function ReturnsPage({
       presentation
     );
 
+    // Demo Interaction Layer: when the real protected dataset is empty, show a
+    // few clearly-marked illustrative rows (redacted by the active profile) so a
+    // demo never lands on a blank Returns screen. Nothing is written.
+    const illustrative = rows.length === 0;
+    const viewRows = illustrative
+      ? toReturnsPresentationRows(DEMO_RETURN_SOURCE, presentation)
+      : rows;
+
     return (
       <ReturnsPresentationView
-        rows={rows}
+        rows={viewRows}
         totals={totals}
         page={page}
         pageSize={pageSize}
-        total={pCount}
+        total={illustrative ? viewRows.length : pCount}
+        illustrative={illustrative}
       />
     );
   }
