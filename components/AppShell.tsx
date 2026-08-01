@@ -20,6 +20,7 @@ import {
   DatabaseBackup,
   UploadCloud,
   FileText,
+  MonitorPlay,
   Menu,
   LogOut,
   ChevronDown,
@@ -51,6 +52,7 @@ const OWNER_NAV = [
   { href: '/import', label: 'Daraz Import', icon: UploadCloud },
   { href: '/audit-log', label: 'Audit Log', icon: ShieldCheck },
   { href: '/backup', label: 'Backup & Export', icon: DatabaseBackup },
+  { href: '/presentation', label: 'Safe View Readiness', icon: MonitorPlay },
 ] as const;
 
 export function AppShell({

@@ -150,6 +150,27 @@ export function assertOwnerCanToggle(role: Role): void {
 }
 
 /**
+ * The single user-facing message shown whenever a write is refused because the
+ * mode is active. Kept as one exported constant so every mutation path — server
+ * actions, API routes, upload/import handlers — speaks with one voice, and so the
+ * tests can assert the exact wording.
+ */
+export const PRESENTATION_READONLY_MESSAGE =
+  'Unavailable while Presentation Safe View is active.';
+
+/**
+ * Global read-only guard for any WRITE path (create/edit/delete/upload/import).
+ * While the mode is active the whole ERP is read-only: this throws so a mutation
+ * fails closed. Pure (takes an already-resolved context) so it is unit-testable
+ * and usable from server actions, route handlers and the shared server guard.
+ */
+export function assertWritable(context: PresentationContext): void {
+  if (context.active) {
+    throw new PresentationError(PRESENTATION_READONLY_MESSAGE);
+  }
+}
+
+/**
  * Enforcement guard for route handlers / server actions: throw when a blocked
  * module is reached while the mode is active. Independent of middleware — never
  * rely on middleware alone for the block.

@@ -7,6 +7,7 @@ import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { str, num } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 import { allocateFifo, planStatusUpdates, round2, type FifoPurchase } from '@/lib/yahyaPayments';
 
 type Tx = Prisma.TransactionClient;
@@ -68,6 +69,8 @@ export async function recordYahyaPayment(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
 
   const dateStr = str(formData.get('date'));
@@ -164,6 +167,8 @@ export async function recordYahyaPayment(
 /** Edit a payment's metadata only (date / bank / reference / notes). Amount and
  *  allocations are immutable — to change them, void and re-record. */
 export async function editYahyaPayment(_prev: FormState, formData: FormData): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return fail('Missing payment id.');
@@ -202,6 +207,7 @@ export async function editYahyaPayment(_prev: FormState, formData: FormData): Pr
 /** Void a payment: it stops counting, and every purchase it touched has its
  *  status recomputed (reverting toward UNPAID / PARTIALLY_PAID). Never deletes. */
 export async function voidYahyaPayment(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   const voidReason = str(formData.get('voidReason'));

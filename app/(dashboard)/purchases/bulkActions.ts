@@ -7,6 +7,7 @@ import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { recordMovement } from '@/lib/stock';
 import { type FormState, fail, ok } from '@/lib/formState';
+import { presentationWriteBlock } from '@/lib/presentation/guard';
 import {
   parseBulkPurchaseCsv,
   rowsFromGrid,
@@ -132,6 +133,8 @@ export interface BulkPreviewState extends FormState {
 
 /** READ-ONLY preview. Never writes. */
 export async function previewBulkPurchases(formData: FormData): Promise<BulkPreviewState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   await requireUser();
   const c = await readAndClassify(formData.get('file'));
   if (c.error) return fail(c.error);
@@ -157,6 +160,8 @@ export interface BulkCommitState extends FormState {
  * nothing is written. All rows default to RECONCILIATION_PENDING.
  */
 export async function commitBulkPurchases(formData: FormData): Promise<BulkCommitState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
 
   const importAnyway = new Set(

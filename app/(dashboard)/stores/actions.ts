@@ -6,11 +6,14 @@ import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { str } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 
 export async function saveStore(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   const name = str(formData.get('name'));
@@ -54,6 +57,7 @@ export async function saveStore(
 }
 
 export async function deleteStore(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;

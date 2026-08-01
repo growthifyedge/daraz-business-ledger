@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/audit';
 import { recordMovement, INSUFFICIENT_STOCK } from '@/lib/stock';
 import { str, num, int } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 
 /** Format an insufficient-stock message. */
 function shortMsg(name: string, available: number) {
@@ -17,6 +18,8 @@ export async function saveSale(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
   const dateStr = str(formData.get('date'));
@@ -214,6 +217,7 @@ export async function saveSale(
 }
 
 export async function deleteSale(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;

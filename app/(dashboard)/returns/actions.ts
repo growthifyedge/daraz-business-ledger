@@ -8,6 +8,7 @@ import { logAudit } from '@/lib/audit';
 import { recordMovement, INSUFFICIENT_STOCK } from '@/lib/stock';
 import { str, num, int } from '@/lib/utils';
 import { type FormState, ok, fail } from '@/lib/formState';
+import { presentationWriteBlock, assertPresentationReadOnly } from '@/lib/presentation/guard';
 import {
   type BucketDelta,
   type Disposition,
@@ -165,6 +166,8 @@ export async function saveReturn(
   _prev: FormState,
   formData: FormData
 ): Promise<FormState> {
+  const blocked = await presentationWriteBlock();
+  if (blocked) return blocked;
   const user = await requireUser();
   const id = str(formData.get('id'));
 
@@ -424,6 +427,7 @@ function translateError(e: unknown): string {
 // ---------------------------------------------------------------------------
 
 export async function deleteReturn(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;
@@ -468,6 +472,7 @@ export async function deleteReturn(formData: FormData) {
 }
 
 export async function restoreReturn(formData: FormData) {
+  await assertPresentationReadOnly();
   const user = await requireUser();
   const id = str(formData.get('id'));
   if (!id) return;
