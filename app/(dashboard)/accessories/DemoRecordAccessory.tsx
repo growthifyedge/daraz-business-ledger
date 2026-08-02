@@ -4,33 +4,29 @@ import { useRef, useState } from 'react';
 import { Plus, Loader2, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/Button';
 import { Modal } from '@/components/Modal';
-import { Card, CardBody, Field, Input, Select, Textarea, Table, THead, TH, TD, TRow } from '@/components/ui';
+import { Card, CardBody, Field, Input, Table, THead, TH, TD, TRow } from '@/components/ui';
 import { useDemoSimulation } from '@/lib/presentation/demo/useDemoSimulation';
 import { useDemoCollection } from '@/lib/presentation/demo/useDemoCollection';
 import { DemoActionResult } from '@/components/demo/DemoActionResult';
 import { DemoActionsBar } from '@/components/demo/DemoActionsBar';
 import { DemoBadge } from '@/components/demo/DemoBadge';
 import {
-  toExpensesPresentationRows,
-  type ExpensesPresentationRow,
-} from '@/lib/presentation/viewmodels/expenses';
+  toAccessoriesPresentationRows,
+  type AccessoriesPresentationRow,
+} from '@/lib/presentation/viewmodels/accessories';
 import type { PresentationProfile } from '@/lib/presentation/core';
 
-const CATEGORIES = ['PACKAGING', 'DELIVERY_TRANSPORT', 'STATIONERY', 'BANK_CHARGES', 'MISCELLANEOUS'];
-const METHODS = ['Cash', 'Bank Transfer', 'Card'];
-
 /**
- * Demo-only "Record Expense" workflow shown inside active Presentation Safe View.
- * On submit it redacts the entered values through the SAME expenses view-model as
- * the real redacted table (money → profile status/band, payer → anonymous label)
- * and appends the row to an in-memory list. The description / payment-method /
- * payer inputs are never carried into the output. No real expense is created and
- * no expense action is called.
+ * Demo-only "Record Demo Accessory / Stock Usage" workflow shown inside active
+ * Presentation Safe View. On submit it redacts the entered unit/total cost
+ * through the SAME accessories view-model as the real redacted table (money →
+ * profile status/band) and appends the row to in-memory state — no real accessory
+ * is created, no stock moves, no upload, and no accessory action is called.
  */
-export function DemoRecordExpense({ profile }: { profile: PresentationProfile | null }) {
+export function DemoRecordAccessory({ profile }: { profile: PresentationProfile | null }) {
   const [open, setOpen] = useState(false);
   const { status, run, reset: resetSim } = useDemoSimulation();
-  const added = useDemoCollection<ExpensesPresentationRow>();
+  const added = useDemoCollection<AccessoriesPresentationRow>();
   const seq = useRef(0);
 
   const ctx = { active: true as const, profile: profile ?? 'OPERATIONS' };
@@ -48,16 +44,19 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const n = ++seq.current;
-    // The payer, description and payment method are intentionally NOT passed into
-    // the source row, so the redacted output can never carry them.
-    const [row] = toExpensesPresentationRows(
+    const purchased = Number(f.get('purchased') || 0);
+    const used = Number(f.get('used') || 0);
+    const unitCost = Number(f.get('unitCost') || 0);
+    const [row] = toAccessoriesPresentationRows(
       [
         {
-          id: `demo-expense-new-${n}`,
-          date: String(f.get('date') || '2026-01-25'),
-          category: String(f.get('category') || CATEGORIES[0]),
-          storeName: 'Ashu Traderz',
-          amount: Number(f.get('amount') || 0),
+          id: `demo-accessory-new-${n}`,
+          name: String(f.get('name') || `Demo Accessory ${n}`),
+          quantityPurchased: purchased,
+          quantityUsed: used,
+          unitCost,
+          totalCost: unitCost * purchased,
+          purchaseDate: String(f.get('date') || '2026-01-25'),
         },
       ],
       ctx
@@ -67,7 +66,7 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
   }
 
   return (
-    <section aria-label="Expenses demo actions">
+    <section aria-label="Accessories demo actions">
       <DemoActionsBar>
         {added.count > 0 && (
           <Button variant="outline" size="sm" onClick={added.reset}>
@@ -75,7 +74,7 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
           </Button>
         )}
         <Button size="sm" onClick={openForm}>
-          <Plus className="h-4 w-4" /> Record Expense
+          <Plus className="h-4 w-4" /> Record Demo Accessory / Stock Usage
         </Button>
       </DemoActionsBar>
 
@@ -85,19 +84,21 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
             <Table>
               <THead>
                 <TRow>
-                  <TH>Date</TH>
-                  <TH>Category</TH>
-                  <TH>Paid By</TH>
-                  <TH align="right">Amount</TH>
+                  <TH>Item</TH>
+                  <TH align="right">Purchased</TH>
+                  <TH align="right">Used</TH>
+                  <TH align="right">Unit Cost</TH>
+                  <TH align="right">Total Cost</TH>
                 </TRow>
               </THead>
               <tbody>
-                {added.items.map((e) => (
-                  <TRow key={e.id}>
-                    <TD>{e.date}</TD>
-                    <TD>{e.category}</TD>
-                    <TD className="text-slate-500">{e.payer}</TD>
-                    <TD align="right" className="font-medium">{e.amount}</TD>
+                {added.items.map((a) => (
+                  <TRow key={a.id}>
+                    <TD className="font-medium">{a.name}</TD>
+                    <TD align="right">{a.quantityPurchased}</TD>
+                    <TD align="right">{a.quantityUsed}</TD>
+                    <TD align="right">{a.unitCost}</TD>
+                    <TD align="right" className="font-medium">{a.totalCost}</TD>
                   </TRow>
                 ))}
               </tbody>
@@ -109,15 +110,15 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
       <Modal
         open={open}
         onClose={close}
-        title="Record Expense"
+        title="Record Demo Accessory / Stock Usage"
         description="Demonstration form — no live records are created."
         size="lg"
       >
         {status === 'success' ? (
           <div className="flex flex-col gap-4">
             <DemoActionResult
-              title="Demo expense recorded successfully"
-              subtitle="Amount is shown by the active profile — no exact figure is revealed."
+              title="Demo accessory recorded successfully"
+              subtitle="Cost is shown by the active profile — no exact figure is revealed."
             />
             <div className="flex justify-end">
               <Button onClick={close}>Done</Button>
@@ -126,30 +127,22 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
         ) : (
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Category" required>
-                <Select name="category" defaultValue={CATEGORIES[0]}>
-                  {CATEGORIES.map((c) => (
-                    <option key={c} value={c}>{c.replace(/_/g, ' ')}</option>
-                  ))}
-                </Select>
+              <Field label="Item name" required>
+                <Input name="name" defaultValue="Packing Tape" />
               </Field>
-              <Field label="Date" required>
+              <Field label="Purchase date">
                 <Input name="date" type="date" defaultValue="2026-01-25" />
               </Field>
-              <Field label="Payment method">
-                <Select name="method" defaultValue={METHODS[0]}>
-                  {METHODS.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </Select>
+              <Field label="Quantity purchased">
+                <Input name="purchased" type="number" min="0" defaultValue={100} />
               </Field>
-              <Field label="Amount">
-                <Input name="amount" type="number" min="0" step="0.01" defaultValue={1250} />
+              <Field label="Quantity used">
+                <Input name="used" type="number" min="0" defaultValue={40} />
+              </Field>
+              <Field label="Unit cost">
+                <Input name="unitCost" type="number" min="0" step="0.01" defaultValue={60} />
               </Field>
             </div>
-            <Field label="Description">
-              <Textarea name="description" placeholder="Demo note (not stored)" />
-            </Field>
 
             <DemoBadge />
 
@@ -159,7 +152,7 @@ export function DemoRecordExpense({ profile }: { profile: PresentationProfile | 
               </Button>
               <Button type="submit" disabled={status === 'pending'}>
                 {status === 'pending' && <Loader2 className="h-4 w-4 animate-spin" />}
-                {status === 'pending' ? 'Recording…' : 'Record expense'}
+                {status === 'pending' ? 'Recording…' : 'Record accessory'}
               </Button>
             </div>
           </form>

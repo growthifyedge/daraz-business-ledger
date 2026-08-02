@@ -78,6 +78,7 @@ export default async function AccessoriesPage({
         page={page}
         pageSize={pageSize}
         total={pCount}
+        profile={presentation.profile}
       />
     );
   }

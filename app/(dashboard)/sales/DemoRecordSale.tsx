@@ -11,25 +11,25 @@ import { DemoActionResult } from '@/components/demo/DemoActionResult';
 import { DemoActionsBar } from '@/components/demo/DemoActionsBar';
 import { DemoBadge } from '@/components/demo/DemoBadge';
 import {
-  toReturnsPresentationRows,
-  type ReturnsPresentationRow,
-} from '@/lib/presentation/viewmodels/returns';
+  toSalesPresentationRows,
+  type SalesPresentationRow,
+} from '@/lib/presentation/viewmodels/sales';
 import type { PresentationProfile } from '@/lib/presentation/core';
 
 const PRODUCTS = ['Wireless Earbuds Pro', 'Smart LED Strip 5m', 'USB-C Fast Charger', 'Bluetooth Speaker Mini'];
-const REASONS = ['Changed mind', 'Damaged in transit', 'Wrong item received', 'Not as described'];
+const STORES = ['Ashu Traderz', 'GrowthifyEdge'];
 
 /**
- * Demo-only "Record Return" workflow shown inside active Presentation Safe View.
- * On submit it redacts the entered values through the SAME view-model the real
- * redacted table uses (so money follows the active Operations/Finance profile and
- * identifiers are anonymised/masked) and appends the row to an in-memory list —
- * no real return is created, no return action is called, nothing is written.
+ * Demo-only "Record Demo Sale" workflow shown inside active Presentation Safe
+ * View. On submit it redacts the entered gross/net through the SAME sales
+ * view-model as the real redacted table (money → profile status/band) and appends
+ * the row to in-memory state — no real sale is created, no stock or COGS changes,
+ * and no sales action is called.
  */
-export function DemoRecordReturn({ profile }: { profile: PresentationProfile | null }) {
+export function DemoRecordSale({ profile }: { profile: PresentationProfile | null }) {
   const [open, setOpen] = useState(false);
   const { status, run, reset: resetSim } = useDemoSimulation();
-  const added = useDemoCollection<ReturnsPresentationRow>();
+  const added = useDemoCollection<SalesPresentationRow>();
   const seq = useRef(0);
 
   const ctx = { active: true as const, profile: profile ?? 'OPERATIONS' };
@@ -47,24 +47,16 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const n = ++seq.current;
-    // Build a source row from the form, then redact it exactly like a real row.
-    // The typed amount is never displayed back — only its profile-safe form is.
-    const [row] = toReturnsPresentationRows(
+    const [row] = toSalesPresentationRows(
       [
         {
-          id: `demo-return-new-${n}`,
-          returnDate: String(f.get('date') || '2026-01-25'),
+          id: `demo-sale-new-${n}`,
+          date: String(f.get('date') || '2026-01-25'),
+          storeName: String(f.get('store') || STORES[0]),
           productName: String(f.get('product') || PRODUCTS[0]),
-          storeName: 'Ashu Traderz',
-          orderNumber: `DEMO-NEW-${1000 + n}`,
-          returnOrderId: `DEMO-RO-NEW-${1000 + n}`,
-          trackingNumber: `DEMO-TRK-NEW-${1000 + n}`,
-          quantity: Number(f.get('quantity') || 1),
-          refundAmount: Number(f.get('amount') || 0),
-          chargedTo: String(f.get('chargedTo') || 'PLATFORM'),
-          refundStatus: String(f.get('status') || 'PENDING'),
-          inventoryStatus: 'PENDING',
-          reason: String(f.get('reason') || REASONS[0]),
+          quantitySold: Number(f.get('quantity') || 1),
+          grossAmount: Number(f.get('gross') || 0),
+          netAmount: Number(f.get('net') || 0),
         },
       ],
       ctx
@@ -74,7 +66,7 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
   }
 
   return (
-    <section aria-label="Returns demo actions">
+    <section aria-label="Manual Sales demo actions">
       <DemoActionsBar>
         {added.count > 0 && (
           <Button variant="outline" size="sm" onClick={added.reset}>
@@ -82,7 +74,7 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
           </Button>
         )}
         <Button size="sm" onClick={openForm}>
-          <Plus className="h-4 w-4" /> Record Return
+          <Plus className="h-4 w-4" /> Record Demo Sale
         </Button>
       </DemoActionsBar>
 
@@ -93,24 +85,22 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
               <THead>
                 <TRow>
                   <TH>Date</TH>
+                  <TH>Store</TH>
                   <TH>Product</TH>
-                  <TH>Customer</TH>
-                  <TH align="right">Qty</TH>
-                  <TH align="right">Refund</TH>
-                  <TH>Status</TH>
-                  <TH>Charged To</TH>
+                  <TH align="right">Units</TH>
+                  <TH align="right">Gross</TH>
+                  <TH align="right">Net</TH>
                 </TRow>
               </THead>
               <tbody>
-                {added.items.map((r) => (
-                  <TRow key={r.id}>
-                    <TD>{r.returnDate}</TD>
-                    <TD>{r.productName}</TD>
-                    <TD>{r.customer}</TD>
-                    <TD align="right">{r.quantity}</TD>
-                    <TD align="right">{r.refund}</TD>
-                    <TD>{r.refundStatus}</TD>
-                    <TD>{r.chargedTo}</TD>
+                {added.items.map((s) => (
+                  <TRow key={s.id}>
+                    <TD>{s.date}</TD>
+                    <TD className="text-slate-500">{s.storeName}</TD>
+                    <TD className="font-medium">{s.productName}</TD>
+                    <TD align="right">{s.quantitySold}</TD>
+                    <TD align="right">{s.grossAmount}</TD>
+                    <TD align="right" className="font-medium">{s.netAmount}</TD>
                   </TRow>
                 ))}
               </tbody>
@@ -122,15 +112,15 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
       <Modal
         open={open}
         onClose={close}
-        title="Record Return"
+        title="Record Demo Sale"
         description="Demonstration form — no live records are created."
         size="lg"
       >
         {status === 'success' ? (
           <div className="flex flex-col gap-4">
             <DemoActionResult
-              title="Demo return recorded successfully"
-              subtitle="Refund is shown by the active profile — no exact amount is revealed."
+              title="Demo sale recorded successfully"
+              subtitle="Amounts are shown by the active profile — no exact figure is revealed."
             />
             <div className="flex justify-end">
               <Button onClick={close}>Done</Button>
@@ -146,30 +136,24 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
                   ))}
                 </Select>
               </Field>
-              <Field label="Quantity" required>
-                <Input name="quantity" type="number" min="1" defaultValue={1} />
-              </Field>
-              <Field label="Reason">
-                <Select name="reason" defaultValue={REASONS[0]}>
-                  {REASONS.map((r) => (
-                    <option key={r} value={r}>{r}</option>
+              <Field label="Store">
+                <Select name="store" defaultValue={STORES[0]}>
+                  {STORES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
                   ))}
                 </Select>
               </Field>
-              <Field label="Refund status">
-                <Select name="status" defaultValue="PENDING">
-                  <option value="PENDING">Pending</option>
-                  <option value="COMPLETED">Completed</option>
-                </Select>
+              <Field label="Units sold" required>
+                <Input name="quantity" type="number" min="1" defaultValue={3} />
               </Field>
-              <Field label="Charged to">
-                <Select name="chargedTo" defaultValue="PLATFORM">
-                  <option value="PLATFORM">Platform</option>
-                  <option value="SELLER">Seller</option>
-                </Select>
+              <Field label="Date">
+                <Input name="date" type="date" defaultValue="2026-01-25" />
               </Field>
-              <Field label="Refund amount">
-                <Input name="amount" type="number" min="0" step="0.01" defaultValue={1999} />
+              <Field label="Gross amount">
+                <Input name="gross" type="number" min="0" step="0.01" defaultValue={5990} />
+              </Field>
+              <Field label="Net received">
+                <Input name="net" type="number" min="0" step="0.01" defaultValue={5100} />
               </Field>
             </div>
 
@@ -181,7 +165,7 @@ export function DemoRecordReturn({ profile }: { profile: PresentationProfile | n
               </Button>
               <Button type="submit" disabled={status === 'pending'}>
                 {status === 'pending' && <Loader2 className="h-4 w-4 animate-spin" />}
-                {status === 'pending' ? 'Recording…' : 'Record return'}
+                {status === 'pending' ? 'Recording…' : 'Record sale'}
               </Button>
             </div>
           </form>

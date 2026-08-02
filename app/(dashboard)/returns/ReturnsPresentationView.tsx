@@ -66,6 +66,8 @@ export function ReturnsPresentationView({
         <StatCard label="Total Refunds" value={totals.refund} />
       </div>
 
+      <DemoRecordReturn profile={profile} />
+
       <Card>
         <CardBody>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -138,8 +140,6 @@ export function ReturnsPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
-
-      <DemoRecordReturn profile={profile} />
     </div>
   );
 }

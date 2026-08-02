@@ -65,6 +65,8 @@ export function ExpensesPresentationView({
         <StatCard label="Records" value={formatNumber(totals.count)} />
       </div>
 
+      <DemoRecordExpense profile={profile} />
+
       <Card>
         <CardBody>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -116,8 +118,6 @@ export function ExpensesPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
-
-      <DemoRecordExpense profile={profile} />
     </div>
   );
 }

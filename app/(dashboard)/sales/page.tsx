@@ -83,6 +83,7 @@ export default async function SalesPage({
         page={page}
         pageSize={pageSize}
         total={pCount}
+        profile={presentation.profile}
       />
     );
   }
