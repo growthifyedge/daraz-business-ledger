@@ -132,6 +132,7 @@ export default async function ReturnsPage({
         pageSize={pageSize}
         total={illustrative ? viewRows.length : pCount}
         illustrative={illustrative}
+        profile={presentation.profile}
       />
     );
   }

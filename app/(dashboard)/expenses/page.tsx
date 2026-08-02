@@ -79,6 +79,7 @@ export default async function ExpensesPage({
         page={page}
         pageSize={pageSize}
         total={pCount}
+        profile={presentation.profile}
       />
     );
   }
