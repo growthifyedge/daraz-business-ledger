@@ -51,20 +51,19 @@ export function PurchasesPresentationView({
         <StatCard label="Paid" value={totals.paid} tone="positive" />
       </div>
 
+      <DemoRecordPurchase />
+
       <Card>
         <CardBody>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <SearchBar placeholder="Search purchases…" />
-            <div className="flex flex-wrap items-center gap-2">
-              <DemoRecordPurchase />
-              <ExportButtons
-                columns={EXPORT_COLUMNS}
-                rows={rows as unknown as Record<string, unknown>[]}
-                filename="purchases-demo"
-                title="Purchases"
-                subtitle="Demo simulation — no live records changed. Confidential values hidden."
-              />
-            </div>
+            <ExportButtons
+              columns={EXPORT_COLUMNS}
+              rows={rows as unknown as Record<string, unknown>[]}
+              filename="purchases-demo"
+              title="Purchases"
+              subtitle="Demo simulation — no live records changed. Confidential values hidden."
+            />
           </div>
 
           {rows.length === 0 ? (

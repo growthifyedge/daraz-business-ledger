@@ -19,11 +19,13 @@ import {
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoRecordSale } from './DemoRecordSale';
 import { formatNumber } from '@/lib/utils';
 import type {
   SalesPresentationRow,
   SalesPresentationTotals,
 } from '@/lib/presentation/viewmodels/sales';
+import type { PresentationProfile } from '@/lib/presentation/core';
 
 const EXPORT_COLUMNS = [
   { key: 'date', label: 'Date' },
@@ -40,12 +42,15 @@ export function SalesPresentationView({
   page,
   pageSize,
   total,
+  profile = null,
 }: {
   rows: SalesPresentationRow[];
   totals: SalesPresentationTotals;
   page: number;
   pageSize: number;
   total: number;
+  /** Active redaction profile, so demo-recorded money follows it. */
+  profile?: PresentationProfile | null;
 }) {
   return (
     <div>
@@ -59,6 +64,8 @@ export function SalesPresentationView({
         <StatCard label="Net Received" value={totals.net} tone="positive" />
         <StatCard label="Units Sold" value={formatNumber(totals.units)} />
       </div>
+
+      <DemoRecordSale profile={profile} />
 
       <Card>
         <CardBody>

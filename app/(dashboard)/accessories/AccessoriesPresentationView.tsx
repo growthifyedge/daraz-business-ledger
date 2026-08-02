@@ -19,11 +19,13 @@ import {
 import { SearchBar } from '@/components/SearchBar';
 import { Pagination } from '@/components/Pagination';
 import { ExportButtons } from '@/components/ExportButtons';
+import { DemoRecordAccessory } from './DemoRecordAccessory';
 import { formatNumber } from '@/lib/utils';
 import type {
   AccessoriesPresentationRow,
   AccessoriesPresentationTotals,
 } from '@/lib/presentation/viewmodels/accessories';
+import type { PresentationProfile } from '@/lib/presentation/core';
 
 const EXPORT_COLUMNS = [
   { key: 'name', label: 'Item' },
@@ -40,12 +42,15 @@ export function AccessoriesPresentationView({
   page,
   pageSize,
   total,
+  profile = null,
 }: {
   rows: AccessoriesPresentationRow[];
   totals: AccessoriesPresentationTotals;
   page: number;
   pageSize: number;
   total: number;
+  /** Active redaction profile, so demo-recorded money follows it. */
+  profile?: PresentationProfile | null;
 }) {
   return (
     <div>
@@ -59,6 +64,8 @@ export function AccessoriesPresentationView({
         <StatCard label="Consumed Cost" value={totals.consumedCost} tone="warning" />
         <StatCard label="Records" value={formatNumber(totals.count)} />
       </div>
+
+      <DemoRecordAccessory profile={profile} />
 
       <Card>
         <CardBody>

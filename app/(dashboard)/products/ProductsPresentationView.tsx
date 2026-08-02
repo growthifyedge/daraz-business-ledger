@@ -51,6 +51,8 @@ export function ProductsPresentationView({
         <StatCard label="Stock Value" value="Hidden" hint="Confidential" />
       </div>
 
+      <DemoProductActions productNames={rows.map((r) => r.name)} />
+
       <Card>
         <CardBody>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -116,8 +118,6 @@ export function ProductsPresentationView({
           <Pagination page={page} pageSize={pageSize} total={total} />
         </CardBody>
       </Card>
-
-      <DemoProductActions productNames={rows.map((r) => r.name)} />
     </div>
   );
 }

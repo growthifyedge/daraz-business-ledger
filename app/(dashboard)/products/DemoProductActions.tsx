@@ -8,6 +8,7 @@ import { Card, CardBody, Field, Input, Select, Badge, Table, THead, TH, TD, TRow
 import { useDemoSimulation } from '@/lib/presentation/demo/useDemoSimulation';
 import { useDemoCollection } from '@/lib/presentation/demo/useDemoCollection';
 import { DemoActionResult } from '@/components/demo/DemoActionResult';
+import { DemoActionsBar } from '@/components/demo/DemoActionsBar';
 import { DemoBadge } from '@/components/demo/DemoBadge';
 
 const CATEGORIES = ['Lifestyle Gadgets', 'Audio', 'Charging', 'Home', 'Accessories'];
@@ -85,29 +86,23 @@ export function DemoProductActions({ productNames }: { productNames: string[] })
   }
 
   return (
-    <section aria-labelledby="demo-products-heading" className="mt-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 id="demo-products-heading" className="text-sm font-semibold text-slate-800">
-          Demo actions
-        </h2>
-        <DemoBadge />
+    <section aria-label="Products demo actions">
+      <DemoActionsBar>
         {stockAdded > 0 && (
-          <span className="text-xs font-medium text-emerald-700">Demo stock added: +{stockAdded} units</span>
+          <span className="mr-1 text-xs font-medium text-emerald-700">+{stockAdded} demo units</span>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          {hasChanges && (
-            <Button variant="outline" size="sm" onClick={resetAll}>
-              <RotateCcw className="h-3.5 w-3.5" /> Reset demo changes
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={openStock}>
-            <PackagePlus className="h-4 w-4" /> Add Stock
+        {hasChanges && (
+          <Button variant="outline" size="sm" onClick={resetAll}>
+            <RotateCcw className="h-3.5 w-3.5" /> Reset demo changes
           </Button>
-          <Button size="sm" onClick={openProduct}>
-            <Plus className="h-4 w-4" /> Add Product
-          </Button>
-        </div>
-      </div>
+        )}
+        <Button variant="outline" size="sm" onClick={openStock}>
+          <PackagePlus className="h-4 w-4" /> Add Stock
+        </Button>
+        <Button size="sm" onClick={openProduct}>
+          <Plus className="h-4 w-4" /> Add Product
+        </Button>
+      </DemoActionsBar>
 
       {products.count > 0 && (
         <Card className="mb-3">

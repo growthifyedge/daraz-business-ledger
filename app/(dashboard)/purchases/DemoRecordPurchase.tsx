@@ -7,6 +7,7 @@ import { Modal } from '@/components/Modal';
 import { Field, Input } from '@/components/ui';
 import { useDemoSimulation } from '@/lib/presentation/demo/useDemoSimulation';
 import { DemoActionResult } from '@/components/demo/DemoActionResult';
+import { DemoActionsBar } from '@/components/demo/DemoActionsBar';
 import { DemoBadge } from '@/components/demo/DemoBadge';
 import { DEMO_PURCHASE_PLACEHOLDER } from '@/lib/presentation/demo/samples';
 
@@ -33,10 +34,12 @@ export function DemoRecordPurchase() {
   }
 
   return (
-    <>
-      <Button onClick={openForm}>
-        <Plus className="h-4 w-4" /> Record Purchase
-      </Button>
+    <section aria-label="Purchases demo actions">
+      <DemoActionsBar>
+        <Button size="sm" onClick={openForm}>
+          <Plus className="h-4 w-4" /> Record Purchase
+        </Button>
+      </DemoActionsBar>
 
       <Modal
         open={open}
@@ -98,6 +101,6 @@ export function DemoRecordPurchase() {
           </form>
         )}
       </Modal>
-    </>
+    </section>
   );
 }
